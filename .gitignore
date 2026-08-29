@@ -1,0 +1,17 @@
+# 依赖与构建产物
+node_modules/
+dist/
+web/dist/
+*.zip
+*.exe
+*.timestamp-*.mjs
+
+# 密钥（严禁提交 / 上传到任何部署平台）
+.dev.vars
+.env
+.deploy-token
+*.token
+
+# 本地工具与草稿（含工作记忆、访问密码等，勿公开）
+.workbuddy/
+.scratch/

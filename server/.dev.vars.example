@@ -1,0 +1,13 @@
+# 复制本文件为 .dev.vars 并填入你自己的 Gitee 配置
+# .dev.vars 已被 git 忽略，仅用于本地开发（wrangler dev 会自动读取）
+
+# Gitee 私人令牌（个人设置 → 开发者设置 → 私人令牌，勾选 projects 权限）
+GITEE_TOKEN = "你的私人令牌"
+
+# 仓库 owner（你的 Gitee 用户名）和仓库名
+GITEE_OWNER = "你的用户名"
+GITEE_REPO = "你的笔记仓库名"
+
+# 访问密码（可选）。配置后所有 /api 请求需带 X-Auth 头（前端自动处理并弹窗输入）。
+# 本地开发一般不配；线上部署（Deno Deploy 环境变量）建议配置。
+# APP_PASSWORD = "你的访问密码"
