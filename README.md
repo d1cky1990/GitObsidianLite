@@ -42,3 +42,17 @@
 | GET | `/api/file?path=` | 读文件（utf8） |
 | PUT | `/api/file` | 写文件（body: path/message/content/sha） |
 | GET | `/api/raw?path=` | 图片 / 附件 raw |
+
+## 自行部署须知
+
+这是一个 **self-hosted 单用户**应用，不提供公共实例：clone 后填自己的 Gitee 令牌部署即可，数据始终在自己的仓库里。
+
+前置条件：
+- 一个 Gitee 账号 + 一个存放笔记的仓库（公开私有都行，令牌需 `projects` 权限）
+- 一台能跑 Node 22 的机器（本地开发），以及一个 Deno Deploy 账号（线上部署）
+- 如果需要**中国大陆免梯子访问**：Deno 账号注册需梯子一次，之后部署与访问均直连（平台政策可能变化，建议自行实测）
+
+## 许可证
+
+[MIT](LICENSE) © 2026 d1cky1990
+
