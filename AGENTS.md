@@ -18,6 +18,7 @@ Two rules that matter more than they look:
 
 - **Design archives are snapshots; `spec.md` is current.** Where they disagree, `spec.md` wins — and the disagreement is a defect to fix, not a state to tolerate. (The archives were written on 2026-08-29 and kept verbatim; ticket 01's hosting conclusion has since been superseded.)
 - **Never let one fact live in two places.** Duplicated knowledge drifts, and the copy nobody proofreads is the one that rots — that's exactly how the archives fell behind the code in the first place. This is why `spec.md` §9 points at `README.md` instead of restating the deploy steps. See `docs/adr/0002`.
+- **Work-in-progress goes in `.scratch/`, and `.scratch/` is not a source of truth.** It is git-ignored and never published. A design archive that is finished moves into `docs/design/` (that move is how the current archives got here). Nothing in `.scratch/` should be read as a decision — check `docs/adr/` and the open issues instead.
 
 ## Agent skills
 

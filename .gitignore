@@ -12,6 +12,9 @@ web/dist/
 .deploy-token
 *.token
 
-# 本地工具与草稿（含工作记忆、访问密码等，勿公开）
+# 本地私有目录（不进公开仓，也不上传任何部署平台）
+#   .workbuddy/  工作记忆与日志——每次 AI 会话的私有上下文
+#   .scratch/    未发布的草稿区；成熟的设计档案放 docs/design/
+# 注意：凭据由上面的 .dev.vars / *.token 规则挡住，与这两个目录互不替代。
 .workbuddy/
 .scratch/
