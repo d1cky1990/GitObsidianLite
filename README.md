@@ -29,7 +29,7 @@
   2. 填 `server/.dev.vars`：`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`（+ 可选 `APP_PASSWORD`）。
   3. 把 `deno.json` 里的 `org` 改成你自己的组织，然后 `deno run -A jsr:@deno/deploy create --org <你的org> --app <app名> --source local --region global --do-not-use-detected-build-config --runtime-mode dynamic --entrypoint deploy/main.ts`（`--do-not-use-detected-build-config` 很关键，否则会误用 Vite 探测覆盖入口）。
   4. `deno run -A jsr:@deno/deploy env add GITEE_TOKEN <值> --org <org> --app <app>`（其余变量同理）。
-  5. 重部署：`deno check deploy/main.ts` → `cd web && npm run build` → `deno run -A jsr:@deno/deploy --prod`（令牌经 `DENO_DEPLOY_TOKEN` 环境变量）。
+  5. 重部署：`deno check deploy/main.ts` → `cd web && npm install && npm run build` → `deno run -A jsr:@deno/deploy --prod`（令牌经 `DENO_DEPLOY_TOKEN` 环境变量）。
 - 访问保护：服务端 `APP_PASSWORD` 环境变量，前端输一次存 localStorage、请求头携带。
 
 ## 后端 API
