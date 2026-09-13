@@ -6,7 +6,7 @@ Repository: `d1cky1990/GitObsidianLite`.
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Create an issue**: `gh issue create --title "..." --body-file <path>`. Write multi-line bodies to a file first — heredocs mangle non-ASCII characters, and these bodies are usually Chinese. Draft bodies can sit in `.scratch/issues/` (git-ignored).
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
@@ -14,6 +14,18 @@ Repository: `d1cky1990/GitObsidianLite`.
 - **Close**: `gh issue close <number> --comment "..."`
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+
+## This tracker is public
+
+The repo is public and **issues are not retractable** — deleting one doesn't erase that it existed or who linked to it. So nothing goes into a title, body, or comment that couldn't be shown to a stranger:
+
+- No credential values, ever — not even expired ones.
+- No absolute local paths, machine names, or deployment URLs.
+- No identifying details of the data behind the app (the note repository's owner/name).
+
+Refer to them by variable name (`GITEE_TOKEN`), or by pointer ("see `server/.dev.vars`").
+
+This constraint usually improves the to-do: if you can't state it without leaking, it isn't an issue — it's a private note, and it belongs somewhere else.
 
 ## Pull requests as a triage surface
 
@@ -48,4 +60,6 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 
 ## Prior art
 
-The first effort (`.scratch/obsidian-mobile-web/`) predates this configuration and lives as local markdown — `map.md`, `spec.md`, and four resolved tickets under `issues/`. It stays where it is, as history. Do not migrate it; do not read it as a live tracker.
+The first effort predates this configuration and lives as a **read-only decision archive** at `docs/design/obsidian-mobile-web/` — `map.md`, `spec.md`, four resolved tickets under `issues/`, three research notes under `research/`.
+
+Read it for *why it was built this way*; don't add tickets there and don't treat it as a live tracker. Its platform decision (ticket 01, EdgeOne Pages) has been superseded — see `spec.md` §9.

@@ -2,6 +2,23 @@
 
 Guidance for agents working in this repo. Project overview and run instructions live in `README.md`.
 
+## Where knowledge lives
+
+Read the right source before proposing anything; write new knowledge back to the right source.
+
+| Topic | Source of truth |
+|---|---|
+| Why the system is built this way — stack, architecture, API surface, auth, hosting constraints | `docs/design/obsidian-mobile-web/spec.md` |
+| Options considered and rejected | `docs/design/obsidian-mobile-web/` (`map.md`, `issues/`, `research/`) — **historical snapshot, read-only** |
+| Settled decisions that shouldn't be reopened | `docs/adr/` |
+| How to run, test and deploy, including known pitfalls | `README.md` |
+| Open work and in-flight decisions | GitHub issues — see below |
+
+Two rules that matter more than they look:
+
+- **Design archives are snapshots; `spec.md` is current.** Where they disagree, `spec.md` wins — and the disagreement is a defect to fix, not a state to tolerate. (The archives were written on 2026-08-29 and kept verbatim; ticket 01's hosting conclusion has since been superseded.)
+- **Never let one fact live in two places.** Duplicated knowledge drifts, and the copy nobody proofreads is the one that rots — that's exactly how the archives fell behind the code in the first place. This is why `spec.md` §9 points at `README.md` instead of restating the deploy steps. See `docs/adr/0002`.
+
 ## Agent skills
 
 ### Issue tracker
