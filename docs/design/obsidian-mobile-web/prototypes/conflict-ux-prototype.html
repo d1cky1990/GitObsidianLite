@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>读写模式与冲突处理 · 状态机原型 v3</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --card: #ffffff; --text: #2c2c2a; --muted: #6b6a65; --line: #e4e2da;
+    --accent: #1d6fb8; --accent-soft: #e6f1fb;
+    --warn: #b8860b; --warn-soft: #faf3e0;
+    --danger: #a32d2d; --danger-soft: #fcebeb;
+    --ok: #0f6e56; --ok-soft: #e1f5ee;
+    --del: #f5c4b3; --del-border: #d85a30;      /* 本地改动高亮（橙） */
+    --ins: #b5d4f4; --ins-border: #378add;      /* 远端改动高亮（蓝） */
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  header { max-width: 960px; margin: 0 auto; padding: 28px 20px 8px; }
+  header h1 { font-size: 18px; font-weight: 600; margin: 0 0 6px; }
+  header p { font-size: 13px; color: var(--muted); margin: 0; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px 20px 40px; display: grid; grid-template-columns: 400px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 780px) { main { grid-template-columns: 1fr; } }
+
+  .phone { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; position: relative; }
+  .phone-bar { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+  .phone-bar .title { font-weight: 600; }
+  .mode-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  .mode-tag.editing { background: var(--warn-soft); color: var(--warn); }
+  .mode-tag.conflict { background: var(--danger-soft); color: var(--danger); }
+  .phone-body { padding: 16px 14px; min-height: 360px; }
+  .phone-foot { padding: 12px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .notice { font-size: 12px; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--line); }
+  .notice.clean { background: var(--ok-soft); border-color: #b5e0cd; color: var(--ok); }
+  .notice.conflict { background: var(--danger-soft); border-color: #f0b9b9; color: var(--danger); }
+
+  .render { font-size: 14px; white-space: pre-wrap; }
+  .render .h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
+  .render p { margin: 0 0 8px; }
+
+  textarea { width: 100%; min-height: 180px; font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; line-height: 1.5; padding: 10px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; color: var(--text); background: #fffdf8; }
+
+  button { font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* toast */
+  .toast {
+    position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%);
+    background: rgba(44,44,42,0.92); color: #fff; font-size: 12px; padding: 8px 14px;
+    border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity 0.25s; z-index: 20;
+    white-space: nowrap;
+  }
+  .toast.show { opacity: 1; }
+
+  /* 单栏 diff */
+  .conflict-head { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+  .legend .sw.ld { background: var(--del); border: 1px solid var(--del-border); }
+  .legend .sw.rd { background: var(--ins); border: 1px solid var(--ins-border); }
+  .legend .sw.ac { background: var(--ok-soft); border: 1px solid var(--ok); }
+  .merge-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .merge-col { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .merge-col-head { font-size: 11px; padding: 6px 10px; background: #faf9f6; border-bottom: 1px solid var(--line); color: var(--muted); }
+  .merge-col-body { font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; padding: 10px 12px; background: #fffdf8; min-height: 200px; }
+  .merge-col-body .frag { border-radius: 4px; padding: 1px 0; cursor: pointer; position: relative; }
+  .merge-col-body .frag.del { background: var(--del); border-bottom: 2px solid var(--del-border); }
+  .merge-col-body .frag.ins { background: var(--ins); border-bottom: 2px solid var(--ins-border); }
+  .merge-col-body .frag.acc { background: var(--ok-soft); color: var(--ok); }
+  .merge-col-body .frag.rej { background: #f1efe8; color: #aaa79c; text-decoration: line-through; }
+  .merge-col-body .frag em { font-style: normal; font-size: 10px; margin-left: 3px; padding: 0 4px; border-radius: 3px; vertical-align: 1px; }
+  .merge-col-body .frag.acc em { background: #cde9dc; color: var(--ok); }
+  .merge-col-body .frag.rej em { background: #e4e2da; color: #88857c; }
+
+  /* 气泡操作条（类似选择文本的复制粘贴条） */
+  .bubble {
+    position: fixed; z-index: 40; display: flex; gap: 2px;
+    background: #2c2c2a; border-radius: 8px; padding: 3px; box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .bubble button { font-size: 12px; padding: 5px 10px; background: transparent; color: #fff; border: none; border-radius: 6px; }
+  .bubble button:hover { background: rgba(255,255,255,0.16); }
+
+  .float-preview { position: sticky; bottom: 0; padding: 10px 14px; background: rgba(255,255,255,0.96); border-top: 1px solid var(--line); display: flex; justify-content: center; }
+  .float-preview button { width: 100%; }
+
+  .sheet-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.25); z-index: 30; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; height: 66.7%; z-index: 31; background: var(--card); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0; display: flex; flex-direction: column; overflow: hidden; }
+  .sheet-head { padding: 10px 14px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); }
+  .sheet-unresolved { font-size: 11.5px; color: var(--danger); background: var(--danger-soft); padding: 7px 14px; }
+  .sheet-body { flex: 1; overflow: auto; padding: 12px 14px; font-size: 12.5px; white-space: pre-wrap; }
+  .sheet-foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  .sheet-foot .row { display: flex; gap: 8px; }
+  .sheet-foot .row button { flex: 1; }
+  .copy-options { display: flex; gap: 8px; }
+  .copy-options button { flex: 1; font-size: 12px; }
+
+  .panel { display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+  .state-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; }
+  .state-grid .k { color: var(--muted); }
+  .state-grid .v { font-family: ui-monospace, Consolas, monospace; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tabs button { font-size: 12px; padding: 6px 10px; }
+  .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .scenario-desc { font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+  .steps { display: flex; flex-direction: column; gap: 6px; }
+  .steps button { text-align: left; }
+  .steps button.done { opacity: 0.55; }
+  .steps button.next { border-color: var(--accent); }
+  .steps button.hint { border-style: dashed; color: var(--muted); }
+  .reset-row { margin-top: 10px; }
+  .msg { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>读写模式与冲突处理 · 状态机原型 v3</h1>
+  <p>要回答的问题：<strong>「编辑/阅读切换 + 切编辑自动拉最新（带 toast）+ 提交冲突时在文本内逐字高亮差异、点选采纳/不采纳（气泡工具条）」这个交互对不对？</strong>重点：字符级高亮不会把段落里的多段修改切碎，点击高亮处直接裁决。</p>
+</header>
+
+<main>
+  <section class="phone" id="phone"></section>
+
+  <section class="panel">
+    <div class="card">
+      <h2>当前状态</h2>
+      <div class="state-grid" id="state"></div>
+    </div>
+    <div class="card">
+      <h2>自由播放</h2>
+      <div class="actions" id="freeplay"></div>
+    </div>
+    <div class="card">
+      <h2>引导走查</h2>
+      <div class="tabs" id="tabs"></div>
+      <p class="scenario-desc" id="scenario-desc"></p>
+      <div class="steps" id="steps"></div>
+      <div class="reset-row"><button id="reset-walk">重跑当前场景</button></div>
+    </div>
+    <div class="msg" id="msg">打开一个场景，或直接点自由播放按钮开始。</div>
+  </section>
+</main>
+
+<script>
+/* ================= 纯逻辑模块（可独立提取） ================= */
+
+const A = {
+  OPEN:'OPEN', START_EDIT:'START_EDIT', DEMO_EDIT:'DEMO_EDIT', TYPE:'TYPE', CANCEL:'CANCEL',
+  COMMIT:'COMMIT', DECIDE:'DECIDE', TOGGLE_PREVIEW:'TOGGLE_PREVIEW', COMMIT_MERGE:'COMMIT_MERGE',
+  SAVE_COPY:'SAVE_COPY', SIMULATE_REMOTE_EDIT:'SIMULATE_REMOTE_EDIT',
+};
+
+let shaCounter = 1;
+const nextSha = () => 'sha-' + (++shaCounter);
+
+const INITIAL = '# 今日待办\n\n- 写周报\n- 回复邮件\n- 去超市买牛奶';
+const EDITED_LOCAL = '# 今日待办\n\n- 写周报\n- 回复A的邮件\n- 去超市买牛奶和鸡蛋';
+
+/* 通用序列 diff（LCS）—— 元素级 */
+function diffSeq(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { out.push({ t: 'equal', x: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ t: 'del', x: a[i] }); i++; }
+    else { out.push({ t: 'ins', x: b[j] }); j++; }
+  }
+  while (i < m) out.push({ t: 'del', x: a[i++] });
+  while (j < n) out.push({ t: 'ins', x: b[j++] });
+  return out;
+}
+
+/* 字符级 diff（LCS）→ 相邻同类型合并为片段 */
+function makeFragments(localText, remoteText) {
+  const ops = diffSeq([...localText], [...remoteText]);
+  const frags = [];
+  let id = 0;
+  for (const op of ops) {
+    const last = frags[frags.length - 1];
+    if (last && last.type === op.t) last.text += op.x;
+    else frags.push({ id: id++, type: op.t, text: op.x });
+  }
+  return frags;
+}
+
+function init() {
+  return {
+    mode: 'reading',
+    remoteContent: INITIAL, remoteSha: 'sha-1',
+    cachedContent: INITIAL, cachedSha: 'sha-1',
+    editorContent: '', editBaseContent: '', editBaseSha: '',
+    conflictLocal: '', conflictRemote: '',
+    fragments: [], decisions: {},
+    previewOpen: false, copyPrompt: false,
+    toast: null,
+    message: '已打开笔记，进入阅读模式。',
+  };
+}
+
+function newDecisions(fragments) {
+  const d = {};
+  for (const f of fragments) if (f.type !== 'equal') d[f.id] = { decision: null };
+  return d;
+}
+
+function isAllResolved(s) {
+  for (const f of s.fragments) {
+    if (f.type === 'equal') continue;
+    const d = s.decisions[f.id];
+    if (!d || !d.decision) return false;
+  }
+  return true;
+}
+
+function computeMerged(s) {
+  let out = '';
+  for (const f of s.fragments) {
+    if (f.type === 'equal') out += f.text;
+    else { const d = s.decisions[f.id]; if (d && d.decision === 'accept') out += f.text; }
+  }
+  return out;
+}
+
+function reduce(state, action) {
+  const s = { ...state, decisions: { ...state.decisions } };
+  switch (action.type) {
+    case A.OPEN: return { ...init(), message: '已打开笔记，进入阅读模式。' };
+
+    case A.START_EDIT: {
+      s.mode = 'editing';
+      if (s.remoteSha !== s.cachedSha) {
+        s.editorContent = s.remoteContent; s.editBaseContent = s.remoteContent; s.editBaseSha = s.remoteSha;
+        s.cachedContent = s.remoteContent; s.cachedSha = s.remoteSha;
+        s.toast = '远端已更新，已自动加载最新内容';
+        s.message = 'double check：远端有更新，已自动加载最新内容。';
+      } else {
+        s.editorContent = s.cachedContent; s.editBaseContent = s.cachedContent; s.editBaseSha = s.cachedSha;
+        s.message = 'double check：远端无改动，进入编辑。';
+      }
+      return s;
+    }
+
+    case A.DEMO_EDIT: {
+      if (s.mode !== 'editing') { s.message = '请先进入编辑模式。'; return s; }
+      s.editorContent = EDITED_LOCAL;
+      s.message = '已演示本地改动：「回复邮件」→「回复A的邮件」，「去超市买牛奶」→「…和鸡蛋」。';
+      return s;
+    }
+
+    case A.TYPE: { s.editorContent = action.text; return s; }
+    case A.CANCEL: { s.mode = 'reading'; s.editorContent = ''; s.message = '已取消编辑（改动未保存）。'; return s; }
+
+    case A.COMMIT: {
+      if (s.remoteSha === s.editBaseSha) {
+        s.remoteContent = s.editorContent; s.remoteSha = nextSha();
+        s.cachedContent = s.editorContent; s.cachedSha = s.remoteSha;
+        s.mode = 'reading'; s.editorContent = '';
+        s.message = '提交成功，回到阅读模式。';
+      } else {
+        s.mode = 'conflict'; s.conflictLocal = s.editorContent; s.conflictRemote = s.remoteContent;
+        s.fragments = makeFragments(s.editorContent, s.remoteContent);
+        s.decisions = newDecisions(s.fragments);
+        s.previewOpen = false; s.copyPrompt = false;
+        s.message = '提交冲突：点高亮的差异片段，选「采纳」或「不采纳」。';
+      }
+      return s;
+    }
+
+    case A.DECIDE: {
+      const d = s.decisions[action.fragId] = s.decisions[action.fragId] || { decision: null };
+      d.decision = action.decision === 'cancel' ? null : action.decision;
+      s.message = '已更新该处裁决。';
+      return s;
+    }
+
+    case A.TOGGLE_PREVIEW: { if (s.mode !== 'conflict') return s; s.previewOpen = !s.previewOpen; s.copyPrompt = false; return s; }
+    case A.COMMIT_MERGE: {
+      if (s.mode !== 'conflict') { s.message = '当前不在冲突合并状态。'; return s; }
+      if (!isAllResolved(s)) { s.message = '还有差异未处理，不能提交合并。'; return s; }
+      const merged = computeMerged(s);
+      s.remoteContent = merged; s.remoteSha = nextSha();
+      s.cachedContent = merged; s.cachedSha = s.remoteSha;
+      s.mode = 'reading'; s.previewOpen = false; s.copyPrompt = false;
+      s.message = '合并提交成功，回到阅读模式。';
+      return s;
+    }
+
+    case A.SAVE_COPY: {
+      if (s.mode !== 'conflict') { s.message = '当前不在冲突合并状态。'; return s; }
+      if (action.which === 'keepLocal') {
+        s.remoteContent = s.editorContent; s.remoteSha = nextSha();
+        s.cachedContent = s.editorContent; s.cachedSha = s.remoteSha;
+        s.message = '已保留本地版本，远端版本另存为「今日待办.conflict.md」。';
+      } else {
+        s.cachedContent = s.remoteContent; s.cachedSha = s.remoteSha;
+        s.message = '已保留远端版本，本地版本另存为「今日待办.local.md」。';
+      }
+      s.mode = 'reading'; s.previewOpen = false; s.copyPrompt = false;
+      return s;
+    }
+
+    case A.SIMULATE_REMOTE_EDIT: {
+      if (s.remoteContent.includes('- 回复邮件')) {
+        s.remoteContent = s.remoteContent.replace('- 回复邮件', '- 回复B的邮件');
+        s.message = '（演示）PC 行内改动：「回复邮件」→「回复B的邮件」。';
+      } else {
+        s.remoteContent += '\n- 整理会议纪要';
+        s.message = '（演示）PC 又追加了一行。';
+      }
+      s.remoteSha = nextSha();
+      return s;
+    }
+    default: return s;
+  }
+}
+
+/* ================= 渲染层 ================= */
+
+const state = { data: init(), activeFrag: null };
+let toastTimer = null;
+
+function render() {
+  const s = state.data;
+  renderPhone(s);
+  renderStatePanel(s);
+  renderFreeplay();
+  renderWalkthrough();
+  document.getElementById('msg').textContent = s.message;
+  if (s.mode === 'conflict' && state.activeFrag != null) requestAnimationFrame(positionBubble);
+}
+
+function dispatch(type, payload) {
+  state.data = reduce(state.data, { type, ...payload });
+  state.activeFrag = null;
+  render();
+  if (state.data.toast) { showToast(state.data.toast); state.data.toast = null; }
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+/* ---- 手机 UI ---- */
+function renderPhone(s) {
+  const phone = document.getElementById('phone');
+  const tag = { reading: '阅读', editing: '编辑', conflict: '冲突' }[s.mode];
+  const tagCls = s.mode === 'reading' ? '' : s.mode;
+
+  let body = '', foot = '', sheet = '';
+  if (s.mode === 'reading') {
+    body = '<div class="render">' + simpleRender(s.remoteContent) + '</div>';
+    foot = '<button class="primary" data-a="START_EDIT">编辑</button>';
+  } else if (s.mode === 'editing') {
+    body = '<div class="notice clean">远端无改动（或已自动加载最新），可安全编辑。</div>' +
+      '<textarea data-a="TYPE">' + esc(s.editorContent) + '</textarea>';
+    foot = '<button class="primary" data-a="COMMIT">提交</button><button data-a="CANCEL">取消</button>';
+  } else {
+    body = renderConflict(s);
+    sheet = renderPreviewSheet(s);
+    if (s.previewOpen) sheet += '<div class="sheet-mask" data-a="TOGGLE_PREVIEW"></div>';
+  }
+
+  phone.innerHTML =
+    '<div class="phone-bar"><span class="title">今日待办.md</span><span class="mode-tag ' + tagCls + '">' + tag + '</span></div>' +
+    '<div class="phone-body">' + body + '</div>' +
+    (s.mode === 'conflict'
+      ? '<div class="float-preview"><button class="primary" data-a="TOGGLE_PREVIEW">预览改动处理</button></div>'
+      : '<div class="phone-foot">' + foot + '</div>') +
+    '<div class="toast" id="toast"></div>' + sheet;
+
+  phone.querySelectorAll('[data-a]').forEach(el => {
+    const a = el.dataset.a;
+    if (el.tagName === 'TEXTAREA') el.addEventListener('input', e => dispatch('TYPE', { text: e.target.value }));
+    else el.addEventListener('click', () => dispatch(a));
+  });
+}
+
+function renderConflict(s) {
+  let html = '<div class="conflict-head">提交冲突 · 左右对照 · 点差异裁决</div>';
+  html += '<div class="legend">' +
+    '<span><span class="sw ld"></span>本地改动</span>' +
+    '<span><span class="sw rd"></span>远端改动</span>' +
+    '<span><span class="sw ac"></span>已采纳</span>' +
+    '</div>';
+  html += '<div class="merge-cols">';
+  html += '<div class="merge-col"><div class="merge-col-head">本地版本（你的改动）</div><div class="merge-col-body">';
+  for (const f of s.fragments) {
+    if (f.type === 'equal') html += '<span>' + esc(f.text) + '</span>';
+    else if (f.type === 'del') html += renderFrag(s, f, 'del');
+  }
+  html += '</div></div>';
+  html += '<div class="merge-col"><div class="merge-col-head">远端版本（PC 改动）</div><div class="merge-col-body">';
+  for (const f of s.fragments) {
+    if (f.type === 'equal') html += '<span>' + esc(f.text) + '</span>';
+    else if (f.type === 'ins') html += renderFrag(s, f, 'ins');
+  }
+  html += '</div></div>';
+  html += '</div>';
+  html += renderBubble(s);
+  return html;
+}
+
+function renderFrag(s, f, cls) {
+  const dec = (s.decisions[f.id] || {}).decision;
+  let c = 'frag ' + cls, mark = '';
+  if (dec === 'accept') { c += ' acc'; mark = '<em>已采纳</em>'; }
+  else if (dec === 'reject') { c += ' rej'; mark = '<em>已不采纳</em>'; }
+  return '<span class="' + c + '" data-fid="' + f.id + '">' + esc(f.text) + mark + '</span>';
+}
+
+function renderBubble(s) {
+  if (state.activeFrag == null) return '';
+  const f = s.fragments.find(x => x.id === state.activeFrag);
+  if (!f || f.type === 'equal') return '';
+  const dec = (s.decisions[f.id] || {}).decision;
+  let btns = '';
+  if (dec == null) btns = '<button data-d="accept">采纳</button><button data-d="reject">不采纳</button>';
+  else if (dec === 'accept') btns = '<button data-d="cancel">取消采纳</button>';
+  else btns = '<button data-d="cancel">取消不采纳</button>';
+  return '<div class="bubble" id="bubble">' + btns + '</div>';
+}
+
+function positionBubble() {
+  const fragEl = document.querySelector('[data-fid="' + state.activeFrag + '"]');
+  const bubble = document.getElementById('bubble');
+  if (!fragEl || !bubble) return;
+  const f = fragEl.getBoundingClientRect();
+  let left = f.left;
+  const bw = bubble.offsetWidth;
+  if (left + bw > window.innerWidth - 8) left = window.innerWidth - bw - 8;
+  if (left < 8) left = 8;
+  bubble.style.left = left + 'px';
+  bubble.style.top = (f.bottom + 4) + 'px';
+  bubble.style.position = 'fixed';
+}
+
+function renderPreviewSheet(s) {
+  if (!s.previewOpen) return '';
+  const unresolved = !isAllResolved(s);
+  const preview = computeMerged(s) + (unresolved ? '\n\n[ 还有差异未处理 ]' : '');
+  let foot = '';
+  if (s.copyPrompt) {
+    foot = '<div class="copy-options">' +
+      '<button data-which="keepLocal">保留本地版本、远端存为副本</button>' +
+      '<button data-which="keepRemote">保留远端版本、本地存为副本</button>' +
+      '</div>';
+  } else {
+    foot = '<div class="row">' +
+      '<button data-a="TOGGLE_PREVIEW">收起预览</button>' +
+      '<button class="primary" data-a="COMMIT_MERGE" ' + (unresolved ? 'disabled' : '') + '>提交合并</button>' +
+      '<button data-copy="open">另存副本</button>' +
+      '</div>';
+  }
+  return '<div class="sheet">' +
+    '<div class="sheet-head">改动处理预览</div>' +
+    (unresolved ? '<div class="sheet-unresolved">处理完所有 diff 才能提交合并</div>' : '') +
+    '<div class="sheet-body">' + esc(preview) + '</div>' +
+    '<div class="sheet-foot">' + foot + '</div>' +
+    '</div>';
+}
+
+/* ---- 状态面板 ---- */
+function renderStatePanel(s) {
+  const dirty = s.mode === 'editing' && s.editorContent !== s.editBaseContent;
+  let diffCount = 0, resolved = '—';
+  if (s.mode === 'conflict') {
+    diffCount = s.fragments.filter(f => f.type !== 'equal').length;
+    resolved = isAllResolved(s) ? '已全部处理' : '有未处理 diff';
+  }
+  const rows = [
+    ['模式', s.mode],
+    ['远端 sha', s.remoteSha],
+    ['缓存 sha', s.cachedSha],
+    ['未提交编辑', dirty ? '是' : '否'],
+    ['差异片段', s.mode === 'conflict' ? diffCount + ' 处' : '—'],
+    ['裁决状态', s.mode === 'conflict' ? resolved : '—'],
+  ];
+  document.getElementById('state').innerHTML = rows.map(([k, v]) =>
+    '<span class="k">' + k + '</span><span class="v">' + v + '</span>').join('');
+}
+
+/* ---- 自由播放 ---- */
+const freeplay = [
+  ['OPEN', '打开笔记'], ['START_EDIT', '点编辑（自动拉最新）'], ['DEMO_EDIT', '演示本地行内改动'],
+  ['COMMIT', '提交'], ['CANCEL', '取消编辑'], ['SIMULATE_REMOTE_EDIT', '模拟 PC 行内改动'],
+  ['TOGGLE_PREVIEW', '预览改动处理'], ['COMMIT_MERGE', '提交合并'],
+];
+function renderFreeplay() {
+  const el = document.getElementById('freeplay');
+  el.innerHTML = freeplay.map(([t, l]) => '<button data-a="' + t + '">' + l + '</button>').join('');
+  el.querySelectorAll('[data-a]').forEach(b => b.addEventListener('click', () => dispatch(b.dataset.a)));
+}
+
+/* ---- 引导走查 ---- */
+const scenarios = [
+  {
+    name: '场景1 · 顺畅提交',
+    desc: '打开 → 编辑（无改动）→ 行内改 → 提交成功。',
+    steps: [['OPEN','打开笔记'],['START_EDIT','点编辑，无改动'],['DEMO_EDIT','演示本地行内改动'],['COMMIT','提交成功']],
+  },
+  {
+    name: '场景2 · 切编辑自动拉最新',
+    desc: 'PC 先改了远端，你才点编辑 → double check 发现改动，自动加载最新（弹 toast）。',
+    steps: [['OPEN','打开笔记'],['SIMULATE_REMOTE_EDIT','PC 改了远端'],['START_EDIT','点编辑，自动加载最新（注意 toast）'],['COMMIT','提交（基于最新）']],
+  },
+  {
+    name: '场景3 · 冲突逐字裁决',
+    desc: '编辑途中 PC 改了远端 → 提交冲突 → 注意：同一处「回复A的邮件 vs 回复B的邮件」会左右分栏，单侧改动「和鸡蛋」则内联高亮 → 点差异选「采纳/不采纳」→ 预览 → 提交合并。',
+    steps: [
+      ['OPEN','打开笔记'],['START_EDIT','点编辑'],['DEMO_EDIT','演示本地行内改动'],
+      ['SIMULATE_REMOTE_EDIT','编辑途中 PC 行内改动'],['COMMIT','提交 → 冲突'],
+      ['HINT','点文本内橙色/蓝色高亮处，选「采纳 / 不采纳」'],
+      ['HINT','点底部「预览改动处理」查看结果'],
+      ['COMMIT_MERGE','提交合并（需处理完所有差异）'],
+    ],
+  },
+  {
+    name: '场景4 · 冲突后另存副本',
+    desc: '冲突后不想合并，用「另存副本」保住两边。',
+    steps: [
+      ['OPEN','打开笔记'],['START_EDIT','点编辑'],['DEMO_EDIT','演示本地行内改动'],
+      ['SIMULATE_REMOTE_EDIT','编辑途中 PC 行内改动'],['COMMIT','提交 → 冲突'],
+      ['HINT','点「预览改动处理」→ 底部「另存副本」'],
+      ['HINT','选「保留本地/远端」，另一方存为副本'],
+    ],
+  },
+];
+
+let walk = { index: 0, step: 0 };
+
+function renderWalkthrough() {
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = scenarios.map((sc, i) =>
+    '<button class="' + (i === walk.index ? 'active' : '') + '" data-sc="' + i + '">' + sc.name + '</button>').join('');
+  tabs.querySelectorAll('[data-sc]').forEach(b => b.addEventListener('click', () => { walk.index = +b.dataset.sc; walk.step = 0; dispatch('OPEN'); }));
+
+  const sc = scenarios[walk.index];
+  document.getElementById('scenario-desc').textContent = sc.desc;
+  const stepsEl = document.getElementById('steps');
+  stepsEl.innerHTML = sc.steps.map((st, i) => {
+    const isHint = st[0] === 'HINT';
+    const cls = (i < walk.step ? 'done' : (i === walk.step ? 'next' : '')) + (isHint ? ' hint' : '');
+    return '<button class="' + cls + '" data-step="' + i + '">' + (i + 1) + '. ' + st[1] + '</button>';
+  }).join('');
+  stepsEl.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => runStep(+b.dataset.step)));
+}
+
+function runStep(i) {
+  if (i !== walk.step) return;
+  const [type] = scenarios[walk.index].steps[i];
+  if (type === 'HINT') {
+    walk.step = i + 1; state.data.message = '请按提示在手机上手动操作。'; render(); return;
+  }
+  dispatch(type);
+  walk.step = i + 1;
+}
+
+/* ---- 事件委托 ---- */
+document.addEventListener('click', (e) => {
+  const dbtn = e.target.closest('[data-d]');
+  if (dbtn) { dispatch('DECIDE', { fragId: state.activeFrag, decision: dbtn.dataset.d }); return; }
+  const frag = e.target.closest('[data-fid]');
+  if (frag) {
+    const fid = +frag.dataset.fid;
+    state.activeFrag = (state.activeFrag === fid) ? null : fid;
+    render();
+    return;
+  }
+  const copy = e.target.closest('[data-which]');
+  if (copy) { dispatch('SAVE_COPY', { which: copy.dataset.which }); return; }
+  const openCopy = e.target.closest('[data-copy="open"]');
+  if (openCopy) { state.data.copyPrompt = true; render(); return; }
+});
+
+/* ---- 工具 ---- */
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function simpleRender(md) {
+  return String(md).split('\n').map(l => {
+    if (l.startsWith('# ')) return '<div class="h1">' + esc(l.slice(2)) + '</div>';
+    if (l.startsWith('- ')) return '<p>· ' + esc(l.slice(2)) + '</p>';
+    return '<p>' + esc(l) + '</p>';
+  }).join('');
+}
+
+document.getElementById('reset-walk').addEventListener('click', () => { walk.step = 0; state.activeFrag = null; state.data = init(); render(); });
+
+render();
+</script>
+</body>
+</html>

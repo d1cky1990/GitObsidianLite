@@ -17,8 +17,12 @@
 1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填入 Gitee 私人令牌、owner、仓库名。
 2. 起后端：`cd server && npm install && npm run dev`（默认 `http://localhost:8787`）。
 3. 起前端：`cd web && npm install && npm run dev`（默认 `http://localhost:5173`，`/api` 已代理到后端）。
+4. 想验证**线上形态**（前后端同进程伺服）时，改用 Deno 直接跑全栈：先 `cd web && npm run build`，再
+   `PORT=8230 deno run --allow-net --allow-read --allow-env --env-file=server/.dev.vars deploy/main.ts`。
 
-浏览器打开 `http://localhost:5173` 即可。
+浏览器打开 `http://localhost:5173`（或第 4 步的 `http://localhost:8230`）即可。
+
+> Windows 上 8000 附近可能落在 Hyper-V 的保留端口段里，起不来就用 `netsh int ipv4 show excludedportrange protocol=tcp` 查一下，换一个端口。
 
 ## 部署上线（Deno Deploy）
 
@@ -31,6 +35,16 @@
   4. `deno run -A jsr:@deno/deploy env add GITEE_TOKEN <值> --org <org> --app <app>`（其余变量同理）。
   5. 重部署：`deno check deploy/main.ts` → `cd web && npm install && npm run build` → `deno run -A jsr:@deno/deploy --prod`（令牌经 `DENO_DEPLOY_TOKEN` 环境变量）。
 - 访问保护：服务端 `APP_PASSWORD` 环境变量，前端输一次存 localStorage、请求头携带。
+
+### 已知坑
+
+- **CLI 必须用 `deno run -A jsr:@deno/deploy`**，不要用内置的 `deno deploy` wrapper——它有 `--help` / `--prod` 重复注入的 bug。
+- **`--do-not-use-detected-build-config` 不能省**。否则 create 会做框架自动探测，认出 `web/` 的 Vite 并覆盖你传的 `--entrypoint`，构建报 "No runtime entrypoint provided"。
+- **`deno.json` 的 `deploy` 块必须含 `org` 字段**，否则 create 报 "missing field org"。
+- **云端构建跑严格 `deno check`**，而本地 `deno run` 会放过隐式 any。**部署前先 `deno check deploy/main.ts`**。
+- **构建失败看日志**：`console.deno.com/api/v2/revisions/{id}/build_logs`（注意路径是 `/api/v2/` 不是 `/v2/`，需 Bearer 令牌 + `X-Deno-Org` 头）。
+- **新账号注册会被区域限制**（`403 SIGNUP_UNAVAILABLE`），需要梯子一次；之后的 API、部署、运行时域名在大陆均可直连（已实测）。
+- **上传白名单在 `deno.json` 的 `include`**：`web/dist` 虽被 `.gitignore` 排除，但仍靠这个白名单带上，删它会导致线上静态资源缺失。
 
 ## 后端 API
 
