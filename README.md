@@ -12,7 +12,7 @@
 
 ## 本地运行
 
-前置：Node 22。
+前置：Node 22。想跑第 4 步的线上形态，还需要 [Deno](https://docs.deno.com/runtime/getting_started/installation/)（Windows 用 `irm https://deno.land/install.ps1 | iex`）——注意官方安装脚本**不会**替你把 `~/.deno/bin` 加进 PATH，装完要自己加，然后**重开终端**。
 
 1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填入 Gitee 私人令牌、owner、仓库名。
 2. 起后端：`cd server && npm install && npm run dev`（默认 `http://localhost:8787`）。
@@ -27,22 +27,29 @@
 ## 部署上线（Deno Deploy）
 
 - 架构：`server/src/core.js`（平台无关 API 核心）被 `server/src/index.js`（本地 wrangler）与 `deploy/main.ts`（Deno 入口，静态 + API 一体）共用。
-- 配置：`deno.json` 的 `deploy` 块指定 org/app/entrypoint 与上传白名单；密钥放 `server/.dev.vars`（`.gitignore` 已排除，绝不上传）。
+- 配置：`deno.json` 的 `deploy` 块指定 org/app/entrypoint 与上传白名单。
+- 两类凭据，落点不同，别搞混：
+  - **应用凭据**（`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO` / 可选 `APP_PASSWORD`）——本地开发放 `server/.dev.vars`（`.gitignore` 已排除，不上传）；线上放**部署平台的环境变量**。
+  - **部署令牌**（`DENO_DEPLOY_TOKEN`）——只用于从本机推代码，**不属于应用**，不要放进 `server/.dev.vars`（那个文件会被整份读进应用进程环境变量，见「本地运行」第 4 步的 `--env-file`）。放**本机环境变量**即可。
 - 步骤：
-  1. 装 Deno；`console.deno.com` 注册（新账号创建需梯子一次），生成访问令牌。
-  2. 填 `server/.dev.vars`：`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`（+ 可选 `APP_PASSWORD`）。
-  3. 把 `deno.json` 里的 `org` 改成你自己的组织，然后 `deno run -A jsr:@deno/deploy create --org <你的org> --app <app名> --source local --region global --do-not-use-detected-build-config --runtime-mode dynamic --entrypoint deploy/main.ts`（`--do-not-use-detected-build-config` 很关键，否则会误用 Vite 探测覆盖入口）。
-  4. `deno run -A jsr:@deno/deploy env add GITEE_TOKEN <值> --org <org> --app <app>`（其余变量同理）。
-  5. 重部署：`deno check deploy/main.ts` → `cd web && npm install && npm run build` → `deno run -A jsr:@deno/deploy --prod`（令牌经 `DENO_DEPLOY_TOKEN` 环境变量）。
+  1. 装 Deno；`console.deno.com` 注册（新账号创建需梯子一次）。
+  2. 在 <https://console.deno.com/account/tokens> 生成访问令牌，设为本机环境变量 `DENO_DEPLOY_TOKEN`（cmd：`setx DENO_DEPLOY_TOKEN "..."`，用 cmd 而非 PowerShell——PowerShell 会把命令记进历史文件，令牌跟着落盘）。
+  3. 填 `server/.dev.vars`：`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`（+ 可选 `APP_PASSWORD`）。
+  4. 把 `deno.json` 里的 `org` 改成你自己的组织，然后 `deno run -A jsr:@deno/deploy create --org <你的org> --app <app名> --source local --region global --do-not-use-detected-build-config --runtime-mode dynamic --entrypoint deploy/main.ts`（`--do-not-use-detected-build-config` 很关键，否则会误用 Vite 探测覆盖入口）。
+  5. 推环境变量：`deno run -A jsr:@deno/deploy env add GITEE_TOKEN <值> --secret --org <org> --app <app>`（其余同理，`GITEE_OWNER` / `GITEE_REPO` 不是机密、不加 `--secret`）。**注意别用 `env load server/.dev.vars`**——它会把文件里的变量全部灌上去，若里面还留着部署令牌就一并交出去了。
+  6. 重部署：`deno check deploy/main.ts` → `cd web && npm install && npm run build` → `deno run -A jsr:@deno/deploy --prod`。
 - 访问保护：服务端 `APP_PASSWORD` 环境变量，前端输一次存 localStorage、请求头携带。
 
 ### 已知坑
 
 - **CLI 必须用 `deno run -A jsr:@deno/deploy`**，不要用内置的 `deno deploy` wrapper——它有 `--help` / `--prod` 重复注入的 bug。
+- **`deno deploy` 的交互式登录在 Windows 上不工作**：会报 `Unable to interact with keychain. The authentication will not be stored...`——注意后半句，**授权结果不会被保存**，即使浏览器登录成功也留不下凭据。即钥匙串方案不可用，`DENO_DEPLOY_TOKEN` 是唯一的持久化方式。（`deno deploy logout` 同理，无凭据可清。）
+- **别用子域名探测判断 app 是否还存在**：Deno 对 `*.deno.net` 做**通配 DNS 解析**，一个确定不存在的 app 子域同样能解析、并返回 `404 DEPLOYMENT_NOT_FOUND`。没有阴性对照就会误判。看控制台或 `deno deploy apps` 更可靠。
 - **`--do-not-use-detected-build-config` 不能省**。否则 create 会做框架自动探测，认出 `web/` 的 Vite 并覆盖你传的 `--entrypoint`，构建报 "No runtime entrypoint provided"。
 - **`deno.json` 的 `deploy` 块必须含 `org` 字段**，否则 create 报 "missing field org"。
 - **云端构建跑严格 `deno check`**，而本地 `deno run` 会放过隐式 any。**部署前先 `deno check deploy/main.ts`**。
 - **构建失败看日志**：`console.deno.com/api/v2/revisions/{id}/build_logs`（注意路径是 `/api/v2/` 不是 `/v2/`，需 Bearer 令牌 + `X-Deno-Org` 头）。
+- **环境变量默认不会被标成 secret**（用 `env add` 时要显式加 `--secret`，用 `env list` 可复核 `isSecret`）。已实测**两个机密不会出现在构建日志里**，但别据此省略 `--secret`——`env list` 会把非 secret 的值明文回传。
 - **新账号注册会被区域限制**（`403 SIGNUP_UNAVAILABLE`），需要梯子一次；之后的 API、部署、运行时域名在大陆均可直连（已实测）。
 - **上传白名单在 `deno.json` 的 `include`**：`web/dist` 虽被 `.gitignore` 排除，但仍靠这个白名单带上，删它会导致线上静态资源缺失。
 
@@ -63,7 +70,7 @@
 
 前置条件：
 - 一个 Gitee 账号 + 一个存放笔记的仓库（公开私有都行，令牌需 `projects` 权限）
-- 一台能跑 Node 22 的机器（本地开发），以及一个 Deno Deploy 账号（线上部署）
+- 一台能跑 Node 22 的机器（本地开发），以及 [Deno](https://docs.deno.com/runtime/getting_started/installation/) + 一个 Deno Deploy 账号（线上部署）。**Deno 装完必须把安装目录加进 PATH**（官方 Windows 脚本不会自动加），否则终端认不出 `deno` 命令
 - 如果需要**中国大陆免梯子访问**：Deno 账号注册需梯子一次，之后部署与访问均直连（平台政策可能变化，建议自行实测）
 
 ## 许可证
