@@ -1,19 +1,28 @@
 import MarkdownIt from 'markdown-it';
 import { listDir, listTree, listHead, readFile, writeFile, rawUrl } from './api.js';
+import { installVaultImageRule, brokenImageHtml } from './vault-refs.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
-// 图片 / 附件走 raw 代理
-const renderImage = md.renderer.rules.image || ((t, i, o, e, s) => s.renderToken(t, i, o));
-md.renderer.rules.image = (tokens, idx, options, env, self) => {
-  const token = tokens[idx];
-  const src = token.attrGet('src') || '';
-  if (src && !/^(https?:|\/api\/)/.test(src)) token.attrSet('src', rawUrl(src));
-  return renderImage(tokens, idx, options, env, self);
-};
+// 图片 / 附件：src 先相对当前笔记所在目录解析成 vault 内路径，再走 raw 代理
+installVaultImageRule(md, { rawUrl });
 
 const app = document.getElementById('app');
+
+// 解析出来的路径也可能在仓库里并不存在（后端 404，或回来的不是图片）。
+// error 事件不冒泡，但在捕获阶段会经过祖先节点，所以监听器挂在 #app 上。
+app.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || img.dataset.failed) return;
+  img.dataset.failed = '1';
+  const holder = document.createElement('span');
+  holder.innerHTML = brokenImageHtml({
+    reason: 'missing',
+    ref: img.dataset.vaultPath || img.getAttribute('src') || '',
+  });
+  img.replaceWith(holder.firstChild);
+}, true);
 
 /* ---------- 访问密码（服务端配置了 APP_PASSWORD 时启用） ---------- */
 function showPasswordModal() {
@@ -379,7 +388,7 @@ function renderEditor() {
   }
 
   const body = state.mode === 'read'
-    ? '<article class="md">' + md.render(state.file.content) + '</article>'
+    ? '<article class="md">' + md.render(state.file.content, { notePath: state.path }) + '</article>'
     : '<textarea class="editor" id="editor">' + esc(state.draft) + '</textarea>';
 
   const actions = state.mode === 'read'
