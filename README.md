@@ -53,6 +53,14 @@
 - **新账号注册会被区域限制**（`403 SIGNUP_UNAVAILABLE`），需要梯子一次；之后的 API、部署、运行时域名在大陆均可直连（已实测）。
 - **上传白名单在 `deno.json` 的 `include`**：`web/dist` 虽被 `.gitignore` 排除，但仍靠这个白名单带上，删它会导致线上静态资源缺失。
 
+## 密钥扫描：平台层对个人账号是死路
+
+GitHub 的「非 provider 模式」与「自定义模式」要求 **Organization-owned 仓库 + GitHub Team/Enterprise + Secret Protection 授权**（官方门槛定义见 `github/docs` 的 `data/reusables/gated-features/secret-scanning-non-provider-patterns.md`）。**个人账号的仓库拿不到**——设置页不渲染这两个开关，API 也静默忽略（`PATCH` 返回 200 但值不变）。别再去找那个开关了。
+
+公开仓默认开启的 `secret_scanning` 与 `secret_scanning_push_protection` 按 **provider 名单**匹配，而 Gitee 不在名单里，所以对本项目的令牌**是盲的**。
+
+结论：平台层给不了这层保护，凭据防线只能靠仓库内的提交前检查（见 issue #4）。别为这事去买 Team。
+
 ## 后端 API
 
 | 方法 | 路径 | 功能 |
