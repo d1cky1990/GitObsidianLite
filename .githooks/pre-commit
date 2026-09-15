@@ -1,0 +1,28 @@
+#!/bin/sh
+# 提交前凭据检查。规则与理由见 scripts/check-secrets.mjs 的头部注释。
+#
+# 这个文件住在仓库里（.githooks/），不是 .git/hooks/ —— 后者不进版本库，
+# clone 的人拿不到，而「装在自己机器上、别人没有」的防护等于没有。
+# 启用需要跑一次：node scripts/install-hooks.mjs（见 README）。
+
+set -u
+
+root=$(git rev-parse --show-toplevel) || exit 0
+checker="$root/scripts/check-secrets.mjs"
+
+# 找不到检查器就放行并说明——但绝不假装检查过了。
+# 这些情况只会在「hook 装了、脚本没了」的畸形检出里出现，说清楚比拦住更省事。
+if [ ! -f "$checker" ]; then
+  echo "pre-commit: 找不到 scripts/check-secrets.mjs，跳过凭据检查（未做任何检查）" >&2
+  exit 0
+fi
+
+# 没有 node 同样放行。这是**有意的 fail-open**：本仓库的 web 构建本来就需要 node，
+# 缺 node 的人连 dev 都跑不起来，在这里硬拦只会拦住无关的提交。
+# 代价是「有防护」的错觉——所以这条消息必须足够刺眼。
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: 未找到 node，凭据检查未运行（本次提交没有任何凭据防护）" >&2
+  exit 0
+fi
+
+exec node "$checker"

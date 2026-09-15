@@ -9,6 +9,8 @@
 - `deploy/main.ts` — Deno Deploy 入口（静态伺服 + API 代理，零外部依赖）
 - `web/` — 前端（Vite + 原生 JS + markdown-it）
 - `deno.json` — Deno Deploy 部署配置（org/app/entrypoint/上传白名单）
+- `scripts/` — 仓库工具：提交前凭据检查、hook 安装
+- `.githooks/pre-commit` — 上面那个检查的挂载点（见「提交前凭据检查」）
 
 ## 本地运行
 
@@ -23,6 +25,36 @@
 浏览器打开 `http://localhost:5173`（或第 4 步的 `http://localhost:8230`）即可。
 
 > Windows 上 8000 附近可能落在 Hyper-V 的保留端口段里，起不来就用 `netsh int ipv4 show excludedportrange protocol=tcp` 查一下，换一个端口。
+
+## 提交前凭据检查
+
+`scripts/check-secrets.mjs` 在 `git commit` 时扫一遍暂存内容，把误提交拦在本地。理由是**删文件 ≠ 删内容**：凭据一旦进了提交，要清干净得重写 git 历史；要是已经 push 过，还得当它已泄漏、轮换掉。
+
+装一次：
+
+```sh
+node scripts/install-hooks.mjs
+```
+
+`core.hooksPath` 是**本地**配置、存在 `.git/config` 里、不进版本库——所以 hook 文件可以跟进仓库，但「指向它」这个动作必须每人各做一次，clone 完不装就等于没有。装没装别靠猜：
+
+```sh
+node scripts/check-secrets.mjs --status   # 未启用时退出码为 1
+```
+
+也支持手工跑：不带参数检查暂存内容（与 hook 同一入口），`--all` 检查所有可能被提交的文件（含未跟踪、不含被忽略的）。
+
+**误报怎么办**——这层能否成立只看一件事：会不会被人主动 `--no-verify` 掉。一个误报频繁的 hook 等于没装，而且更糟：它会让人以为有防护。所以规则只拦「看起来像真值」的，文档里光出现 `GITEE_TOKEN` 这类字样不算。
+
+- 误报：该行任意位置加 `secret-scan:allow`，或把占位值改成一眼假的（`your-token`、`你的令牌`）
+- 真泄漏：从改动里拿掉，改放 `server/.dev.vars`（已被 `server/.gitignore` 排除）
+- 确实要绕过：`git commit --no-verify` ← 绕过的正是这一层，别当成没事
+
+规则分三层（本机真值指纹 / 赋值形态 / 敏感词紧邻的高熵串），每层为什么这么定写在脚本头部注释里。改规则后跑一遍测试：
+
+```sh
+node --test "scripts/**/*.test.mjs"
+```
 
 ## 部署上线（Deno Deploy）
 
