@@ -59,7 +59,7 @@ GitHub 的「非 provider 模式」与「自定义模式」要求 **Organization
 
 公开仓默认开启的 `secret_scanning` 与 `secret_scanning_push_protection` 按 **provider 名单**匹配，而 Gitee 不在名单里，所以对本项目的令牌**是盲的**。
 
-结论：平台层给不了这层保护，凭据防线只能靠仓库内的提交前检查（见 issue #4）。别为这事去买 Team。
+**结论：不买 Team。** 花 $4/人/月 换来的是「通用高熵串启发式」，而它匹配不了 Gitee 令牌这种 32 位 hex 无固定前缀的串——本项目最需要保护的那个值，花了钱照样盖不住。平台层不再投入，凭据防线交给仓库内的提交前检查（issue #4 的方案：拿 `.dev.vars` 真值当指纹扫暂存内容，零依赖、零误报、吃格式无关，反而盖得住 Team 盖不住的地方）。
 
 ## 后端 API
 
