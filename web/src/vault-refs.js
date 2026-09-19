@@ -108,12 +108,13 @@ export function runtimeFailureReason({ vaultPath, indexReady }) {
  * 命名 100% 是 Obsidian 粘贴图片时自动生成的形态。
  *
  * 三条路径，票面已定：
- *   - 索引里**有**这个路径 → 原样返回（相对解析成功的现状，那 10 条能开的落点不变）
+ *   - 索引里**有**这个路径 → 原样返回（相对解析成功的现状，那些能开的落点不变）
  *   - 没有、但文件名命中 → 用命中的路径（重名取树序第一个：索引的 `files` 就是先到先得，
  *     与双链 basename 匹配同一条规则，不另造）
- *   - 没命中 / **索引没拿到** → 维持现状，把请求原样发出去，让真实的 404 如实报。
- *     这里不静态改判「文件不存在」：索引是本地快照，它说没有不等于请求会失败；
- *     而把「还没查完」当成「确实没有」，正是上面 `PENDING_IMAGE_CLASS` 要避免的事。
+ *   - **索引没拿到**（拉取失败，不是「正在拉」——正在拉由 `installVaultImageRule` 拦在中性
+ *     占位那一态）→ 维持现状，把请求原样发出去，让真实的 404 如实报。这里不静态改判
+ *     「文件不存在」：索引是本地快照，它说没有不等于请求会失败；而把「还没查完」当成
+ *     「确实没有」，正是上面 `PENDING_IMAGE_CLASS` 要避免的事。
  *
  * @param {import('./wikilinks.js').WikilinkIndex|null} index
  * @param {string} path 相对解析出来的路径
@@ -128,9 +129,18 @@ export function pickVaultImagePath(index, path) {
 
 /**
  * 装上图片规则：把 vault 内引用改写成后端 raw 代理地址，并在无法解析时就地给出提示。
+ *
+ * 库内引用有两处需要拿全库清单，所以 `deps` 要能回答两个问题（都只在渲染那一刻取值，
+ * 所以传的是函数而不是值）：
+ *   - `getIndex()`：清单到手了没有——到手了就能按文件名反查
+ *   - `isIndexPending()`：**正在拉**还是**没拉到**。这两件事在图片上的正确做法不同：
+ *     正在拉 → 摆中性占位等着（不白跑一趟必然 404 的请求，票面已定）；
+ *     没拉到 → 照常发请求，因为等下去也不会变，能开的那几张还得能开。
+ *
  * @param {import('markdown-it')} md
  * @param {{rawUrl:(path:string)=>string,
- *          getIndex?:()=>import('./wikilinks.js').WikilinkIndex|null}} deps
+ *          getIndex?:()=>import('./wikilinks.js').WikilinkIndex|null,
+ *          isIndexPending?:()=>boolean}} deps
  */
 export function installVaultImageRule(md, deps) {
   const renderToken = md.renderer.rules.image || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
@@ -141,8 +151,11 @@ export function installVaultImageRule(md, deps) {
 
     if (resolved.kind === 'invalid') return brokenImageHtml({ reason: resolved.reason, ref: src });
     if (resolved.kind === 'vault') {
-      // 取索引的时机是渲染期，而索引可能在渲染之后才到——那时 `getIndex` 还是 null，
-      // 反查退化成「维持现状」，补渲染时再走一遍这里（见 main.js 的 repaintWithIndex）。
+      // 清单还在路上：不知道文件在不在，就不摆一张必然报错的图。显示解析出来的路径而不是
+      // 原始引用——它是解过百分号编码的，人能读。清单到了由 main.js 补一次渲染换成真图。
+      if (deps.isIndexPending && deps.isIndexPending()) {
+        return brokenImageHtml({ reason: 'pending', ref: resolved.path });
+      }
       const path = pickVaultImagePath(deps.getIndex ? deps.getIndex() : null, resolved.path);
       token.attrSet('src', deps.rawUrl(path));
       // 供运行期 404 的提示复用（浏览器拿不到请求失败时用的是哪条 vault 路径）

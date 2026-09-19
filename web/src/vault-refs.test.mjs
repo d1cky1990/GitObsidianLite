@@ -108,7 +108,7 @@ test('反查也未命中：不改判，把请求原样发出去让真实的 404 
   assert.equal(pickVaultImagePath(index, '工作/真没有.png'), '工作/真没有.png');
 });
 
-test('索引没拿到：同样维持现状（中性态由 404 分支负责，不在这里凭空判定）', () => {
+test('索引没拿到：不改判，维持现状（「确实没有」这句话这里不说）', () => {
   assert.equal(pickVaultImagePath(null, '工作/image_1683881602423_0.png'), '工作/image_1683881602423_0.png');
   assert.equal(pickVaultImagePath(undefined, '工作/已到位.png'), '工作/已到位.png');
 });
@@ -147,11 +147,12 @@ test('「还在确认位置」的那句话不该出现「不存在」二字（�
 
 /* ---------- 接到 markdown-it 上 ---------- */
 
-function render(markdown, notePath, idx = null) {
+function render(markdown, notePath, idx = null, pending = false) {
   const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
   installVaultImageRule(md, {
     rawUrl: (p) => `/api/raw?path=${encodeURIComponent(p)}`,
     getIndex: () => idx,
+    isIndexPending: () => pending,
   });
   return md.render(markdown, { notePath });
 }
@@ -187,16 +188,39 @@ test('提示里的引用做了转义（不因文件名带尖括号而注入）',
   assert.equal(brokenImageHtml({ reason: 'missing', ref: '<b>x</b>' }).includes('<b>'), false);
 });
 
+test('端到端：清单正在拉时不发请求，摆中性占位（票面已定：不白跑必然 404 的请求）', () => {
+  const html = render('![](image_1683881602423_0.png)', '工作/随手记.md', null, true);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /文件不存在/);
+  assert.match(html, new RegExp(PENDING_IMAGE_CLASS));
+  // 显示解析出来的路径（百分号编码已解），不是原始引用
+  assert.match(html, /<code>工作\/image_1683881602423_0\.png<\/code>/);
+});
+
+test('端到端：清单没拉到（不是正在拉）照常发请求——等下去也不会变', () => {
+  const html = render('![](image_1683881602423_0.png)', '工作/随手记.md', null, false);
+  assert.match(html, /<img/);
+  assert.match(html, /data-vault-path="工作\/image_1683881602423_0\.png"/);
+  assert.doesNotMatch(html, new RegExp(PENDING_IMAGE_CLASS));
+});
+
+test('端到端：清单正在拉，外链照旧直连（它从来不靠清单）', () => {
+  const html = render('![](https://a.com/x.png)', '工作/随手记.md', null, true);
+  assert.match(html, /src="https:\/\/a\.com\/x\.png"/);
+  assert.doesNotMatch(html, new RegExp(PENDING_IMAGE_CLASS));
+});
+
+test('端到端：清单正在拉，解析即失败的照样如实报（与清单无关）', () => {
+  const html = render('![](../../x.png)', '工作/a.md', null, true);
+  assert.match(html, /相对路径越出仓库根/);
+  assert.doesNotMatch(html, new RegExp(PENDING_IMAGE_CLASS));
+});
+
 test('端到端：索引到位后，裸文件名引用指向 assets/ 下的真图（#8 的主场景）', () => {
   const html = render('![](image_1683881602423_0.png)', '工作/随手记.md', index);
   assert.match(html, /src="\/api\/raw\?path=assets%2Fimage_1683881602423_0\.png"/);
   assert.match(html, /data-vault-path="assets\/image_1683881602423_0\.png"/);
-});
-
-test('端到端：索引未到位时引用原样发请求（不假装、不改判）', () => {
-  const html = render('![](image_1683881602423_0.png)', '工作/随手记.md', null);
-  assert.match(html, /data-vault-path="工作\/image_1683881602423_0\.png"/);
-  assert.doesNotMatch(html, /assets/);
+  assert.doesNotMatch(html, new RegExp(PENDING_IMAGE_CLASS));
 });
 
 test('端到端：索引到位也不动能开的那条（落点不变）', () => {

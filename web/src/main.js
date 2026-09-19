@@ -10,12 +10,19 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 // 双链与图片共用同一份索引（`#7` 建的，含非 `.md` 文件的 basename → 路径）：
 // 双链拿它判「解不解得开」，图片拿它在相对解析失败后按文件名反查（`#8`）。
-// 声明在两个插件之前，是因为渲染钩子会读它（此时还只是闭包，不取值的）。
+// `wikilinkIndex` 与 `wikilinkIndexPromise` 都声明在两个插件之前，是因为渲染钩子会读它们
+// （此时还只是闭包，不取值的）。
 let wikilinkIndex = null;
 
 // 图片 / 附件：src 先相对当前笔记所在目录解析成 vault 内路径，解析不到再按文件名反查，
 // 最后都走 raw 代理。
-installVaultImageRule(md, { rawUrl, getIndex: () => wikilinkIndex });
+// `isIndexPending` 区分「正在拉清单」与「清单没拉到」：前者摆中性占位等着（不白跑一趟必然
+// 404 的请求），后者照常发请求——等下去也不会变，能开的那几张还得能开。
+installVaultImageRule(md, {
+  rawUrl,
+  getIndex: () => wikilinkIndex,
+  isIndexPending: () => wikilinkIndexPromise !== null,
+});
 
 installWikilinkRule(md, { getIndex: () => wikilinkIndex, rawUrl });
 
@@ -26,8 +33,12 @@ const app = document.getElementById('app');
 //
 // 404 只说「这个地址上没有文件」，**不等于**「文件不存在」：裸文件名的图片引用（Obsidian
 // 的默认写法）解析出来本就在别人家的目录里，只要全库文件名单到手就还能按文件名找回来
-// （见 vault-refs.js 的 pickVaultImagePath）。名单没到手时我们判不了这件事，只能如实说
-// 还没查完——名单到了 repaintWithIndex 会整篇重画一遍，这类占位会换成真图。
+// （见 vault-refs.js 的 pickVaultImagePath）。
+//
+// 清单**正在拉**时轮不到这里——那时渲染的是中性占位，压根不发请求。所以走到这里的 404
+// 只有两种：清单已到手（反查找过了，确实没有）、或清单**没拉到**（等下去也不会变，只是
+// 我们判不了「确实没有」）。判据是 runtimeFailureReason，且它对没有 data-vault-path 的
+// 外链不生效——一张挂掉的推特图不该被说成「还在确认位置」。
 app.addEventListener('error', (e) => {
   const img = e.target;
   if (!(img instanceof HTMLImageElement) || img.dataset.failed) return;
