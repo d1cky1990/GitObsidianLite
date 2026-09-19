@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { listDir, listTree, listHead, readFile, writeFile, rawUrl } from './api.js';
-import { installVaultImageRule, brokenImageHtml } from './vault-refs.js';
+import { installVaultImageRule, brokenImageHtml, runtimeFailureReason } from './vault-refs.js';
 import {
   installWikilinkRule, buildWikilinkIndex, hydrateWikilinkIndex, serializeWikilinkIndex, lookupWikilink,
 } from './wikilinks.js';
@@ -8,12 +8,14 @@ import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
-// 图片 / 附件：src 先相对当前笔记所在目录解析成 vault 内路径，再走 raw 代理
-installVaultImageRule(md, { rawUrl });
-
-// 双链的判定也只需要一份索引，见下方「文件名 → 路径索引」。
-// 声明在插件之前，是因为渲染钩子会读它（此时还只是闭包，不取值的）。
+// 双链与图片共用同一份索引（`#7` 建的，含非 `.md` 文件的 basename → 路径）：
+// 双链拿它判「解不解得开」，图片拿它在相对解析失败后按文件名反查（`#8`）。
+// 声明在两个插件之前，是因为渲染钩子会读它（此时还只是闭包，不取值的）。
 let wikilinkIndex = null;
+
+// 图片 / 附件：src 先相对当前笔记所在目录解析成 vault 内路径，解析不到再按文件名反查，
+// 最后都走 raw 代理。
+installVaultImageRule(md, { rawUrl, getIndex: () => wikilinkIndex });
 
 installWikilinkRule(md, { getIndex: () => wikilinkIndex, rawUrl });
 
@@ -21,14 +23,20 @@ const app = document.getElementById('app');
 
 // 解析出来的路径也可能在仓库里并不存在（后端 404，或回来的不是图片）。
 // error 事件不冒泡，但在捕获阶段会经过祖先节点，所以监听器挂在 #app 上。
+//
+// 404 只说「这个地址上没有文件」，**不等于**「文件不存在」：裸文件名的图片引用（Obsidian
+// 的默认写法）解析出来本就在别人家的目录里，只要全库文件名单到手就还能按文件名找回来
+// （见 vault-refs.js 的 pickVaultImagePath）。名单没到手时我们判不了这件事，只能如实说
+// 还没查完——名单到了 repaintWithIndex 会整篇重画一遍，这类占位会换成真图。
 app.addEventListener('error', (e) => {
   const img = e.target;
   if (!(img instanceof HTMLImageElement) || img.dataset.failed) return;
   img.dataset.failed = '1';
+  const vaultPath = img.dataset.vaultPath || '';
   const holder = document.createElement('span');
   holder.innerHTML = brokenImageHtml({
-    reason: 'missing',
-    ref: img.dataset.vaultPath || img.getAttribute('src') || '',
+    reason: runtimeFailureReason({ vaultPath, indexReady: !!wikilinkIndex }),
+    ref: vaultPath || img.getAttribute('src') || '',
   });
   img.replaceWith(holder.firstChild);
 }, true);
@@ -81,7 +89,7 @@ function showPasswordModal() {
 }
 window.addEventListener('need-password', showPasswordModal);
 
-// 文件名 → 路径索引（用于双链判定与跳转），带 HEAD sha 增量缓存。
+// 文件名 → 路径索引（用于双链判定与跳转、图片引用的按文件名反查），带 HEAD sha 增量缓存。
 //
 // 索引要能回答三种问题，所以笔记与非笔记分开存：「是笔记」「是仓库文件（不是笔记）」
 // 「不存在」。只收 .md 的老做法会把「文件明明存在」说成「未找到笔记」——#7 要修的正是这个。
@@ -112,7 +120,8 @@ function writeCachedIndex(head, index) {
  *
  * **失败会 reject，不吞成空索引**——空索引会让每一条双链都渲染成「文件不存在」，
  * 把一次网络故障说成上千条断链。渲染层把「拿不到」和「确实没有」当成两件事：
- * 前者渲染成中性可点重试的样式，后者才报不存在。
+ * 前者渲染成中性可点重试的样式，后者才报不存在。图片同理：双链渲染成
+ * `wikilink-unknown`，图片渲染成 `img-pending`，而且**不会**退化成「文件不存在」。
  *
  * **也不拦在打开笔记的路上**：整棵树实测 3~5 秒（`/api/file` 只要 1 秒），把它 `await`
  * 进 `openFile` 就是把打开一篇笔记从 1 秒拖成 4 秒。所以这里是预热 + 就绪后补渲染，
@@ -139,17 +148,20 @@ function ensureIndex() {
   })().catch((e) => { wikilinkIndexPromise = null; throw e; });
   // 索引到位 → 把上一次渲染里的中性「不知道」换成真实判定。
   // 只在只读状态补：编辑中重渲染会丢光标与未提交的输入。
-  wikilinkIndexPromise.then(repaintWikilinks, () => {});
+  wikilinkIndexPromise.then(repaintWithIndex, () => {});
   return wikilinkIndexPromise;
 }
 
 /**
- * 索引就绪后补一次渲染。
+ * 索引到位后补一次渲染。
+ *
+ * 整篇重画（不是只改双链）：图片引用的反查结果同样取决于索引，中性占位也要一起换掉。
+ * 从插件一路看下来，改名的代价比留一个说谎的函数名小。
  *
  * 只在只读态补：编辑中重渲染会丢光标与未提交的输入。
  * 补渲染会整块替换 `#app`，所以要自己把滚动位置带过去——否则用户读着读着页面跳回顶部。
  */
-function repaintWikilinks() {
+function repaintWithIndex() {
   if (state.view !== 'editor' || state.mode !== 'read') return;
   const y = window.scrollY;
   render();
