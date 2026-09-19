@@ -26,6 +26,15 @@
 
 > Windows 上 8000 附近可能落在 Hyper-V 的保留端口段里，起不来就用 `netsh int ipv4 show excludedportrange protocol=tcp` 查一下，换一个端口。
 
+## 测试
+
+```sh
+cd web && npm test                     # 前端：双链 / 引用解析等纯函数
+node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则
+```
+
+两边都是 `node --test`，没有额外测试框架。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
+
 ## 提交前凭据检查
 
 `scripts/check-secrets.mjs` 在 `git commit` 时扫一遍暂存内容，把误提交拦在本地。理由是**删文件 ≠ 删内容**：凭据一旦进了提交，要清干净得重写 git 历史；要是已经 push 过，还得当它已泄漏、轮换掉。
