@@ -39,7 +39,7 @@ export function resolveVaultRef(notePath, ref) {
     ? path.split('/')
     : [...dirOf(notePath), ...path.split('/')];
 
-  const normalized = normalizeSegments(segments);
+  const normalized = normalizeVaultSegments(segments);
   if (normalized == null) return { kind: 'invalid', reason: 'escape-root' };
   if (!normalized) return { kind: 'invalid', reason: 'empty' };
   return { kind: 'vault', path: normalized };
@@ -88,17 +88,16 @@ export function installVaultImageRule(md, deps) {
   };
 }
 
-function dirOf(notePath) {
-  const parts = String(notePath || '').split('/');
-  return parts.length > 1 ? parts.slice(0, -1) : [];
-}
-
-function decodeOnce(ref) {
-  try { return decodeURIComponent(ref); } catch { return ref; }
-}
-
-/** 归一化 . 与 ..；越出根返回 null */
-function normalizeSegments(segments) {
+/**
+ * 归一化一组路径段：吃掉 `.` 与 `..`，越出仓库根返回 null，空路径返回 ''。
+ *
+ * 导出是因为双链解析也要用同一套归一化（`wikilinks.js` 的路径写法匹配）。
+ * 「越根不静默退化」这条判据只有一份实现，两处引用同一份——复制出来的第二份，
+ * 就是将来没人校对、先烂掉的那一份。
+ * @param {string[]} segments
+ * @returns {string|null}
+ */
+export function normalizeVaultSegments(segments) {
   const out = [];
   for (const seg of segments) {
     if (seg === '' || seg === '.') continue;
@@ -112,6 +111,15 @@ function normalizeSegments(segments) {
   return out.join('/');
 }
 
-function escapeHtml(s) {
+function dirOf(notePath) {
+  const parts = String(notePath || '').split('/');
+  return parts.length > 1 ? parts.slice(0, -1) : [];
+}
+
+function decodeOnce(ref) {
+  try { return decodeURIComponent(ref); } catch { return ref; }
+}
+
+export function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

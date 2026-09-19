@@ -1,12 +1,21 @@
 import MarkdownIt from 'markdown-it';
 import { listDir, listTree, listHead, readFile, writeFile, rawUrl } from './api.js';
 import { installVaultImageRule, brokenImageHtml } from './vault-refs.js';
+import {
+  installWikilinkRule, buildWikilinkIndex, hydrateWikilinkIndex, serializeWikilinkIndex, lookupWikilink,
+} from './wikilinks.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 // 图片 / 附件：src 先相对当前笔记所在目录解析成 vault 内路径，再走 raw 代理
 installVaultImageRule(md, { rawUrl });
+
+// 双链的判定也只需要一份索引，见下方「文件名 → 路径索引」。
+// 声明在插件之前，是因为渲染钩子会读它（此时还只是闭包，不取值的）。
+let wikilinkIndex = null;
+
+installWikilinkRule(md, { getIndex: () => wikilinkIndex, rawUrl });
 
 const app = document.getElementById('app');
 
@@ -72,82 +81,79 @@ function showPasswordModal() {
 }
 window.addEventListener('need-password', showPasswordModal);
 
-// Obsidian 双链 [[...]] 解析：支持 [[文件名]]、[[文件名|别名]]、[[文件名#标题]]
-function wikilinkPlugin(md) {
-  md.inline.ruler.before('link', 'wikilink', (state, silent) => {
-    const pos = state.pos;
-    if (state.src.charCodeAt(pos) !== 0x5b || state.src.charCodeAt(pos + 1) !== 0x5b) return false;
-    const end = state.src.indexOf(']]', pos + 2);
-    if (end === -1) return false;
-    const inner = state.src.slice(pos + 2, end);
-    if (!inner || inner.includes('[') || inner.includes(']') || inner.includes('\n')) return false;
-    if (!silent) { const token = state.push('wikilink', '', 0); token.content = inner; }
-    state.pos = end + 2;
-    return true;
-  });
-  md.renderer.rules.wikilink = (tokens, idx) => {
-    const inner = tokens[idx].content;
-    let target = inner, label = inner;
-    if (inner.includes('|')) { const p = inner.split('|'); target = p[0]; label = p[1] || p[0]; }
-    if (target.includes('#')) target = target.split('#')[0];
-    if (label.includes('#')) label = label.split('#')[0];
-    const fname = target.trim();
-    return '<a class="wikilink" data-wikilink="' + esc(fname) + '">' + esc(label.trim()) + '</a>';
-  };
-}
-wikilinkPlugin(md);
+// 文件名 → 路径索引（用于双链判定与跳转），带 HEAD sha 增量缓存。
+//
+// 索引要能回答三种问题，所以笔记与非笔记分开存：「是笔记」「是仓库文件（不是笔记）」
+// 「不存在」。只收 .md 的老做法会把「文件明明存在」说成「未找到笔记」——#7 要修的正是这个。
+//
+// 缓存只存路径清单，映射读回时重建：映射能从路径推出来，存两份就是让它们有机会漂移。
+const INDEX_CACHE_KEY = 'fileIndexCache.v2';
+const LEGACY_INDEX_CACHE_KEY = 'fileIndexCache.v1';
+let wikilinkIndexPromise = null;
 
-// 文件名 → 路径索引（用于双链跳转），带 HEAD sha 增量缓存
-const INDEX_CACHE_KEY = 'fileIndexCache.v1';
-let fileIndex = null;
-let fileIndexPromise = null;
-
-function buildIndex(tree) {
-  const map = new Map();
-  for (const node of (tree || [])) {
-    if (node.type === 'blob' && node.path.endsWith('.md')) {
-      const base = node.path.split('/').pop().replace(/\.md$/i, '');
-      if (!map.has(base)) map.set(base, node.path);
-    }
-  }
-  return map;
-}
-
-function loadCachedIndex() {
+function readCachedIndex() {
   try {
     const raw = localStorage.getItem(INDEX_CACHE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data && data.head && data.index) return data;
-  } catch (e) { /* 忽略 */ }
+  } catch (e) { /* 坏值当没有 */ }
   return null;
 }
 
-function saveCachedIndex(head, map) {
+function writeCachedIndex(head, index) {
   try {
-    localStorage.setItem(INDEX_CACHE_KEY, JSON.stringify({ head, index: Object.fromEntries(map) }));
+    localStorage.setItem(INDEX_CACHE_KEY, JSON.stringify({ head, index: serializeWikilinkIndex(index) }));
   } catch (e) { /* 忽略（可能超配额） */ }
 }
 
+/**
+ * 索引就绪的 Promise。
+ *
+ * **失败会 reject，不吞成空索引**——空索引会让每一条双链都渲染成「文件不存在」，
+ * 把一次网络故障说成上千条断链。渲染层把「拿不到」和「确实没有」当成两件事：
+ * 前者渲染成中性可点重试的样式，后者才报不存在。
+ *
+ * **也不拦在打开笔记的路上**：整棵树实测 3~5 秒（`/api/file` 只要 1 秒），把它 `await`
+ * 进 `openFile` 就是把打开一篇笔记从 1 秒拖成 4 秒。所以这里是预热 + 就绪后补渲染，
+ * 而不是 await。开方见 `openFile`。
+ */
 function ensureIndex() {
-  if (fileIndex) return Promise.resolve(fileIndex);
-  if (fileIndexPromise) return fileIndexPromise;
-  fileIndexPromise = (async () => {
+  if (wikilinkIndex) return Promise.resolve(wikilinkIndex);
+  if (wikilinkIndexPromise) return wikilinkIndexPromise;
+  wikilinkIndexPromise = (async () => {
+    try { localStorage.removeItem(LEGACY_INDEX_CACHE_KEY); } catch (e) { /* 忽略 */ }
     // 1. 拿 HEAD sha，与缓存对比
-    const cached = loadCachedIndex();
+    const cached = readCachedIndex();
     const head = await listHead();
     if (cached && cached.head === head.sha) {
-      fileIndex = new Map(Object.entries(cached.index));
-      return fileIndex;
+      wikilinkIndex = hydrateWikilinkIndex(cached.index);
+      return wikilinkIndex;
     }
-    // 2. HEAD 变了（或有缓存失效），拉全量重建
+    // 2. HEAD 变了（或没有缓存），拉全量重建
     const data = await listTree();
-    const map = buildIndex(data.tree);
-    fileIndex = map;
-    saveCachedIndex(head.sha, map);
-    return map;
-  })().catch(() => { fileIndexPromise = null; return new Map(); });
-  return fileIndexPromise;
+    const index = buildWikilinkIndex(data.tree);
+    writeCachedIndex(head.sha, index);
+    wikilinkIndex = index;
+    return index;
+  })().catch((e) => { wikilinkIndexPromise = null; throw e; });
+  // 索引到位 → 把上一次渲染里的中性「不知道」换成真实判定。
+  // 只在只读状态补：编辑中重渲染会丢光标与未提交的输入。
+  wikilinkIndexPromise.then(repaintWikilinks, () => {});
+  return wikilinkIndexPromise;
+}
+
+/**
+ * 索引就绪后补一次渲染。
+ *
+ * 只在只读态补：编辑中重渲染会丢光标与未提交的输入。
+ * 补渲染会整块替换 `#app`，所以要自己把滚动位置带过去——否则用户读着读着页面跳回顶部。
+ */
+function repaintWikilinks() {
+  if (state.view !== 'editor' || state.mode !== 'read') return;
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
 }
 
 /* ---------- 冲突合并：字符级 diff ---------- */
@@ -251,6 +257,11 @@ async function loadDir(path) {
 async function openFile(path) {
   state.busy = true; state.message = ''; render();
   try {
+    // 双链要在**渲染期**就判得出解不解得开，但索引本身（一次全树拉取，实测 3~5 秒）
+    // 不能拦在这次打开的路上——那会把打开一篇笔记从 1 秒拖成 4 秒。所以：预热，不 await。
+    // 索引还没到就先按中性「不知道」渲染，到了由 ensureIndex 补一次 render 换掉。
+    // 索引拿不到不算打开失败：正文照读。
+    ensureIndex().catch(() => {});
     const file = await readFile(path);
     state.view = 'editor';
     state.file = file; state.path = path;
@@ -523,15 +534,32 @@ document.addEventListener('click', async (e) => {
   }
   const copy = e.target.closest('[data-copy]');
   if (copy) { saveCopy(copy.dataset.copy); return; }
-  const link = e.target.closest('.wikilink');
+  // 解不开的双链：不是链接，但点一下要说清它想指向谁（#7 保持这一行为）
+  const dead = e.target.closest('[data-wikilink-broken]');
+  if (dead) { e.preventDefault(); toast('文件不存在：' + dead.dataset.wikilinkBroken); return; }
+  // 可达的笔记双链，以及索引未就绪时渲染出来的中性链接（后者在这里重试一次索引）
+  const link = e.target.closest('[data-wikilink]');
   if (!link) return;
   e.preventDefault();
-  const fname = link.dataset.wikilink;
-  const idx = await ensureIndex();
-  const path = idx.get(fname);
-  if (path) location.hash = '#/edit/' + encodeURIComponent(path);
-  else toast('未找到笔记：' + fname);
+  await followWikilink(link.dataset.wikilink);
 });
+
+async function followWikilink(target) {
+  let idx = wikilinkIndex;
+  if (!idx) {
+    try { idx = await ensureIndex(); }
+    catch (e) { toast('索引加载失败，暂时打不开链接'); return; }
+  }
+  const hit = lookupWikilink(idx, target, state.path);
+  if (hit.kind === 'note') { location.hash = '#/edit/' + encodeURIComponent(hit.path); return; }
+  // 仓库内非笔记文件：渲染时给的是 <a href>，只有索引未就绪那条路才走到这里
+  if (hit.kind === 'file') { window.open(rawUrl(hit.path), '_blank', 'noopener'); return; }
+  toast('文件不存在：' + target);
+}
+
+// 索引预热：全树拉一次要 3~5 秒，趁用户翻目录时先跑起来，打开第一篇笔记时多半已就绪。
+// 失败不在这里报——它会以中性「不知道」呈现，点击时还有一次重试（见 ensureIndex）。
+ensureIndex().catch(() => {});
 
 window.addEventListener('hashchange', navigate);
 navigate();

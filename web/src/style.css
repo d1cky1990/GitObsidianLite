@@ -61,8 +61,19 @@ a { color: inherit; text-decoration: none; }
   word-break: break-all;
 }
 .md .img-broken code { background: none; padding: 0; color: inherit; font-size: 0.95em; }
+/* 双链：解不解得开，渲染期就该看得出来，别让人先点一下才知道（#7）。
+   四种结果各自一眼可辨——可达 / 仓库内非笔记文件 / 目标不存在 / 索引未就绪。 */
 .md a.wikilink { color: var(--accent); text-decoration: none; }
 .md a.wikilink:active { opacity: 0.7; }
+.md a.wikilink-file { color: var(--accent); text-decoration: none; border-bottom: 1px dashed #9dc0dd; }
+.md a.wikilink-file::after {
+  content: '↗'; margin-left: 1px; vertical-align: 0.25em;
+  font-size: 0.72em; color: var(--muted);
+}
+/* 目标不存在：不是链接，点一下只说清它想指向谁 */
+.md .wikilink-broken { color: var(--muted); border-bottom: 1px dotted #c2bfb4; }
+/* 索引没拿到 ≠ 不存在。既不装成好链接，也不判死刑 */
+.md a.wikilink-unknown { color: var(--muted); text-decoration: none; border-bottom: 1px dotted #c2bfb4; }
 .md blockquote { margin: 0.5em 0; padding: 2px 14px; border-left: 3px solid var(--line); color: var(--muted); }
 .md table { border-collapse: collapse; }
 .md th, .md td { border: 1px solid var(--line); padding: 6px 10px; }
