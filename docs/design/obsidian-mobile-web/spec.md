@@ -51,7 +51,8 @@ Gitee OpenAPI v5（gitee.com/api/v5）
 
 ## 4. 后端 API（对前端暴露）
 
-> 设计意图如下；**权威描述是 `server/src/core.js`**——约 230 行，路由全部集中在一处，改动以它为准。
+> 设计意图如下；**权威描述是 `server/src/core.js`**——路由全部集中在一处，改动以它为准。
+> 这里不写它的行数：那个数字只会一直过期。
 
 | 方法 | 路径 | 功能 | 对应的 Gitee API |
 |---|---|---|---|
@@ -59,11 +60,22 @@ Gitee OpenAPI v5（gitee.com/api/v5）
 | GET | `/api/tree?path=` | 列某目录下内容（懒加载） | `GET /repos/{o}/{r}/contents/{path}` |
 | GET | `/api/tree/recursive` | 整棵树（path→blob sha） | `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1` |
 | GET | `/api/file?path=` | 读文件（base64→utf8） | `GET /repos/{o}/{r}/contents/{path}` |
-| PUT | `/api/file` | 更新文件（message+sha+content） | `PUT /repos/{o}/{r}/contents/{path}` |
+| PUT | `/api/file` | **写文件**：带 `sha` 改、不带 `sha` 建 | `PUT` / `POST /repos/{o}/{r}/contents/{path}` |
+| DELETE | `/api/file` | 删文件（body: path/sha/message） | `DELETE /repos/{o}/{r}/contents/{path}` |
 | GET | `/api/raw?path=` | 图片 / 附件 raw（代理转发） | `GET /repos/{o}/{r}/raw/{path}` |
 
-- 更新文件请求体：`{ path, message, content, sha }`；后端校验后转 base64 调 Gitee。
-- 冲突信号：Gitee `PUT contents` 在 sha 不匹配时返回错误 → 后端转成明确的「409 冲突」给前端，并附上最新 sha 与远端内容。
+- 写文件请求体：`{ path, message, content, sha }`；后端校验后转 base64 调 Gitee。
+- **「建」与「改」在 Gitee 是两个端点，这层差异留在服务端**：`PUT` 的 `sha` 在那里是必填
+  （缺了直接 `400 sha is missing`），新建走 `POST`（无 sha，成功 201）。浏览器只该知道
+  「带 sha 是改、不带是建」。
+- **同名新建被 Gitee 自己挡下**（`400 文件名已存在`，原文件不动）→ 后端转成 409 + `exists` 标记，
+  前端据此说「这个名字已经有了」。同一条规则也用在移动的目标目录上。
+- **冲突信号是 `400`，不是 409**（2026-09-21 实测）：`{"message":"Blob SHA does not match"}`，
+  且远端内容未被覆盖。后端按**措辞**而非状态码判定，因为同一个 400 还被「缺 sha」「内容为空」
+  两种情况共用。识别为冲突后统一返回 **409** 给前端，并附上最新 sha 与远端内容。
+- **不存在的路径，Gitee 回的是 `200 + []`**（文件和目录都这样）——不能用状态码判存在性，
+  只能看 body。`/api/file` 因此把空数组认作 404「文件不存在」。
+- **空内容建不出来**（`400 content is empty`）：新建空笔记写的是一个换行。
 
 ## 5. 数据 / 缓存模型
 
@@ -75,6 +87,13 @@ Gitee OpenAPI v5（gitee.com/api/v5）
 ## 6. 页面与交互流程
 
 三个页面：文件列表页、编辑器页、设置页。
+
+### 文件操作（新建 / 删除 / 重命名 / 移动）
+
+形态、文案、失败行为、撤销——**全部定在 [#11 的结论](https://github.com/d1cky1990/GitObsidianLite/issues/11#issuecomment-5750741293)**，实现见 #26。本节不复述那批决定，只登记入口落在哪两个页面上，好让下面两节读得通：
+
+- 文件列表页：右下角悬浮「新建」；每个**文件**行右侧「⋯」（目录行没有——目录的改名/移动/删除要逐个文件重写，本版不做）。
+- 编辑器页：页头右上角「⋯」，内容与列表页同一套；**编辑态下三个动作置灰**。
 
 ### 编辑器页（票 04 定稿）
 
