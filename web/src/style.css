@@ -32,16 +32,46 @@ a { color: inherit; text-decoration: none; }
 .bar .back { color: var(--accent); }
 
 .list { flex: 1; padding: 4px 0; }
+/* 一行拆两段：能点的链接区 + 行尾的「⋯」。
+   两段必须是**兄弟**——按钮塞进 <a> 里是非法嵌套，点按钮会顺手把笔记也打开。 */
 .row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 14px 16px; background: var(--card);
-  border-bottom: 1px solid var(--line); font-size: 15px;
+  display: flex; align-items: center;
+  background: var(--card); border-bottom: 1px solid var(--line); font-size: 15px;
 }
-.row:active { background: #f0efe9; }
-.row.dim { color: var(--muted); }
+.row-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+}
+.row-main:active { background: #f0efe9; }
+.row.dim .row-main { color: var(--muted); }
+.row-more {
+  flex: none; width: 46px; height: 46px; margin-right: 4px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 8px; background: none;
+  font-family: inherit; font-size: 18px; line-height: 1; color: var(--muted);
+  cursor: pointer;
+}
+.row-more:active { background: #f0efe9; }
+/* 编辑态的三个动作置灰——但按钮**不 disable**：disable 掉就点不动，
+   那句「先保存或取消」也就没人看得见。置灰交给这里，提示交给点一下。 */
+.row-more.is-disabled { opacity: 0.4; }
 .ic { width: 20px; text-align: center; color: var(--muted); flex: none; }
 .ic.dir { color: var(--accent); }
 .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 目录页右下角的「新建」。向下滚收起、向上滚约 50px 出现、内容不足一屏时常显 */
+.fab {
+  position: fixed; z-index: 20;
+  right: max(16px, calc(50% - 344px));
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  padding: 12px 18px; border: none; border-radius: 999px;
+  background: var(--accent); color: #fff;
+  font-family: inherit; font-size: 15px; font-weight: 600;
+  box-shadow: 0 4px 14px rgba(29, 111, 184, 0.35); cursor: pointer;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.fab-hidden { opacity: 0; transform: translateY(14px); pointer-events: none; }
 
 .editor-body { flex: 1; padding: 16px; }
 .md { font-size: 16px; word-break: break-word; }
@@ -117,6 +147,19 @@ a { color: inherit; text-decoration: none; }
   background: rgba(44,44,42,0.92); color: #fff; font-size: 13px;
   padding: 8px 16px; border-radius: 999px; max-width: 80vw; z-index: 50;
 }
+/* 带动作的提示条（删除后的「撤销」）。它不只是通知——是一个能点的地方，
+   所以按钮得有自己的按压区，别跟文字挤成一团 */
+.toast.with-act {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 16px;
+}
+.toast-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast-act {
+  flex: none; border: none; border-radius: 999px; background: rgba(255,255,255,0.14);
+  color: #9ed0ff; font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer;
+}
+.toast-act:active { background: rgba(255,255,255,0.28); }
 
 /* ---------- 冲突合并 ---------- */
 .conflict-head { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
@@ -152,15 +195,87 @@ a { color: inherit; text-decoration: none; }
   background: var(--card); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0;
   display: flex; flex-direction: column; overflow: hidden; max-width: 720px; margin: 0 auto;
 }
-.sheet-head { padding: 10px 14px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); }
+.sheet-head { padding: 10px 14px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); word-break: break-all; }
+/* 「⋯」那张操作表内容很少，占满 2/3 屏只是难看 */
+.sheet.auto { height: auto; }
 .sheet-unresolved { font-size: 11.5px; color: #a32d2d; background: #fcebeb; padding: 7px 14px; }
 .sheet-body { flex: 1; overflow: auto; padding: 12px 14px; font-size: 12.5px; white-space: pre-wrap; }
 .sheet-foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .sheet-row { display: flex; gap: 8px; }
 .sheet-row button { flex: 1; }
 .sheet-row button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 灰着但点得动——为了让它能说清为什么现在不能按（见 pickerMoveHere） */
+.sheet-row button.is-disabled { opacity: 0.45; }
 .copy-options { display: flex; gap: 8px; }
 .copy-options button { flex: 1; font-size: 12px; }
+
+/* ---------- 文件操作（#26） ---------- */
+
+/* 「⋯」点开的那张表 */
+.ops { display: flex; flex-direction: column; }
+.op {
+  text-align: left; padding: 15px 16px;
+  border: none; border-bottom: 1px solid var(--line); background: none;
+  font-family: inherit; font-size: 15px; color: var(--text); cursor: pointer;
+}
+.op:active { background: #f0efe9; }
+.op.danger { color: #c0392b; }
+.op.is-disabled { color: var(--muted); }
+.op-hint { padding: 10px 16px; font-size: 12.5px; color: #9a5a3c; background: #fbf2ed; }
+
+/* 弹窗：填名字（新建 / 重命名）与两次确认（删除 / 移动）共用一套壳 */
+.modal-mask { position: fixed; inset: 0; background: rgba(30, 28, 24, 0.45); z-index: 60; }
+.modal {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(340px, 88vw); z-index: 61;
+  background: var(--card); border-radius: 14px; padding: 18px 18px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+}
+.modal-title { font-size: 16px; font-weight: 600; word-break: break-all; }
+.modal-hint { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+/* 断链提醒要看得见——它不是一个可以点「知道了」跳过的说明 */
+.modal-warn {
+  font-size: 12.5px; line-height: 1.6; color: #9a5a3c;
+  background: #fbf2ed; border: 1px solid #f0dccf; border-radius: 8px; padding: 8px 10px;
+}
+.modal-body { font-size: 13px; line-height: 1.65; }
+.modal-body b { word-break: break-all; }
+.modal-err { font-size: 12.5px; color: #c0392b; min-height: 16px; }
+.modal-btns { display: flex; gap: 8px; }
+.modal-btns button {
+  flex: 1; font-family: inherit; font-size: 15px; padding: 11px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--text); cursor: pointer;
+}
+.modal-btns button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.modal-btns button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+.modal-btns button:active { opacity: 0.8; }
+.dlg-input {
+  width: 100%; padding: 10px 12px; outline: none;
+  border: 1px solid var(--line); border-radius: 8px;
+  font-family: inherit; font-size: 15px; background: var(--bg); color: var(--text);
+}
+.dlg-input:focus { border-color: var(--accent); }
+
+/* 移动用的目录选择器 */
+.pick-crumbs {
+  display: flex; align-items: center; gap: 2px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line);
+  font-size: 12.5px; color: var(--muted); overflow-x: auto; white-space: nowrap;
+}
+.pick-crumbs .sep { margin: 0 2px; }
+.pick-body { padding: 0; }
+.pick-row {
+  width: 100%; text-align: left; border-radius: 0;
+  padding: 14px 16px; gap: 12px;
+  border: none; border-bottom: 1px solid var(--line);
+  background: var(--card); font-family: inherit; font-size: 15px; color: var(--text);
+  cursor: pointer;
+}
+.pick-row:active { background: #f0efe9; }
+.pick-target { font-size: 12.5px; color: var(--muted); }
+.pick-target b { color: var(--text); word-break: break-all; }
 
 /* ---------- 访问密码弹窗 ---------- */
 #pw-overlay {

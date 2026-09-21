@@ -1,9 +1,14 @@
 import MarkdownIt from 'markdown-it';
-import { listDir, listTree, listHead, readFile, writeFile, rawUrl } from './api.js';
+import {
+  listDir, listTree, listHead, readFile, writeFile, createFile, deleteFile, rawUrl,
+} from './api.js';
 import { installVaultImageRule, brokenImageHtml, runtimeFailureReason } from './vault-refs.js';
 import {
   installWikilinkRule, buildWikilinkIndex, hydrateWikilinkIndex, serializeWikilinkIndex, lookupWikilink,
 } from './wikilinks.js';
+import {
+  dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
+} from './file-names.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -245,16 +250,32 @@ const state = {
   busy: false,
   conflict: null, // { local, remote, fragments, decisions, previewOpen, copyPrompt }
   activeFrag: null, // 当前点击的 diff 片段 id
+
+  // ---- 文件操作（#26）的状态，全是「当前屏幕上多出来的一层」 ----
+  ops: null, // { path } —— 「⋯」点开的那张操作表
+  dialog: null, // { type:'prompt'|'confirm', ... } —— 新建 / 重命名 / 删除确认
+  picker: null, // { dir, entries, busy } —— 移动时的目录选择器
+  toastAction: null, // { label, run } —— 删除后的「撤销」按钮
+  undo: null, // { path, content, dir } —— 撤销删除要用的原稿
+  openInEdit: null, // 新建之后要直接进编辑态的那条路径
 };
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function toast(msg) {
+// 提示条可以带一个动作（目前只有删除后的「撤销」）。带动作的多留一会儿——一句 2.5 秒
+// 就没了的提示，配上要去找的按钮，等于没给。
+let toastTimer = null;
+function toast(msg, action = null) {
   state.message = msg;
+  state.toastAction = action;
   render();
-  setTimeout(() => { if (state.message === msg) { state.message = ''; render(); } }, 2500);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    if (state.message !== msg) return; // 期间又被别的提示顶掉了，别把新的收走
+    state.message = ''; state.toastAction = null; render();
+  }, action ? 8000 : 2500);
 }
 
 function navigate() {
@@ -271,14 +292,18 @@ function navigate() {
 }
 
 async function loadDir(path) {
-  state.busy = true; state.message = ''; render();
+  // 进新目录时把浮层收掉（操作表/弹窗是针对上一屏的东西），但**不清 message**：
+  // 删除后的「撤销」就挂在提示条上，翻页把它收走等于把撤销入口也收走了。
+  closeOverlays();
+  state.busy = true; render();
   try { state.entries = await listDir(path); state.path = path; }
   catch (e) { state.entries = []; toast(e.message); }
-  state.busy = false; render();
+  state.busy = false; resetFab(); render();
 }
 
 async function openFile(path) {
-  state.busy = true; state.message = ''; render();
+  closeOverlays();
+  state.busy = true; render();
   try {
     // 双链要在**渲染期**就判得出解不解得开，但索引本身（一次全树拉取，实测 3~5 秒）
     // 不能拦在这次打开的路上——那会把打开一篇笔记从 1 秒拖成 4 秒。所以：预热，不 await。
@@ -289,6 +314,8 @@ async function openFile(path) {
     state.view = 'editor';
     state.file = file; state.path = path;
     state.mode = 'read'; state.draft = file.content;
+    // 新建完直接进来的那一次：跳过阅读态，落笔就写（空笔记停在阅读态没有意义）
+    if (state.openInEdit === path) { state.mode = 'edit'; state.openInEdit = null; }
     state.busy = false;
   } catch (e) {
     state.busy = false;
@@ -298,10 +325,17 @@ async function openFile(path) {
   render();
 }
 
+/** 打开某目录（走 hash 路由，好让返回键能用）。 */
+function gotoDir(dir) {
+  const target = '#/dir/' + encodeURIComponent(dir);
+  if (location.hash === target) loadDir(dir);
+  else location.hash = target; // hashchange → navigate → loadDir
+}
+
 async function save() {
-  state.busy = true; state.message = ''; render();
+  state.busy = true; render();
   try {
-    const r = await writeFile(state.file.path, state.draft, state.file.sha);
+    const r = await writeFile(state.file.path, state.draft, state.file.sha, commitMessage.edit(state.file.path));
     state.file.sha = r.sha; state.file.content = state.draft;
     state.mode = 'read';
     toast('已保存');
@@ -330,9 +364,9 @@ function decide(fragId, decision) {
 async function commitMerge() {
   if (!isAllResolved(state.conflict)) { toast('还有差异未处理'); return; }
   const merged = computeMerged(state.conflict);
-  state.busy = true; state.message = ''; render();
+  state.busy = true; render();
   try {
-    const r = await writeFile(state.file.path, merged, state.conflict.remote.sha, '合并冲突');
+    const r = await writeFile(state.file.path, merged, state.conflict.remote.sha, commitMessage.merge(state.file.path));
     state.file.sha = r.sha; state.file.content = merged;
     state.mode = 'read'; state.conflict = null;
     toast('合并已保存');
@@ -347,14 +381,15 @@ async function saveCopy(which) {
   const base = state.file.path;
   const dot = base.lastIndexOf('.');
   const stem = dot > 0 ? base.slice(0, dot) : base;
-  state.busy = true; state.message = ''; render();
+  state.busy = true; render();
   try {
     if (which === 'keepLocal') {
-      await writeFile(base, c.local, c.remote.sha, '保留本地，远端存副本');
-      await writeFile(stem + '.conflict.md', c.remote.content, undefined, '冲突副本：远端原内容');
+      // 这两笔里第一笔是**更新**（带 sha），第二笔是**新建**（不带 sha → 服务端走 POST）
+      await writeFile(base, c.local, c.remote.sha, commitMessage.keepLocal(base));
+      await createFile(stem + '.conflict.md', c.remote.content, commitMessage.copySheet(stem + '.conflict.md'));
       toast('已保留本地版本，远端存为 ' + stem + '.conflict.md');
     } else {
-      await writeFile(stem + '.local.md', c.local, undefined, '冲突副本：本地改动');
+      await createFile(stem + '.local.md', c.local, commitMessage.copySheet(stem + '.local.md'));
       toast('已保留远端版本，本地存为 ' + stem + '.local.md');
     }
     await openFile(base);
@@ -371,6 +406,12 @@ function render() {
   else renderList();
 }
 
+// 「返回」回到这篇笔记**所在的目录**，不是回到根。从深目录点进来，再退回根，
+// 等于每看一篇都要重新走一遍路径。
+function backHref() {
+  return '#/dir/' + encodeURIComponent(dirOf(state.path));
+}
+
 function crumbs(path) {
   const parts = path ? path.split('/').filter(Boolean) : [];
   let html = '<a href="#/">根</a>';
@@ -382,20 +423,36 @@ function crumbs(path) {
   return html;
 }
 
+function renderToast() {
+  if (!state.message) return '';
+  const act = state.toastAction
+    ? '<button class="toast-act" data-act="toastAction">' + esc(state.toastAction.label) + '</button>'
+    : '';
+  return '<div class="toast' + (act ? ' with-act' : '') + '"><span class="toast-txt">' +
+    esc(state.message) + '</span>' + act + '</div>';
+}
+
 function renderList() {
   const sorted = [...state.entries].sort((a, b) => {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+  // 行拆成两段：能点的链接区 + 行尾的操作区。
+  // 这两段必须是**兄弟**——按钮塞进 <a> 里是非法嵌套，点按钮会顺手把笔记也打开。
   const items = sorted.map((e) => {
     const icon = e.type === 'dir' ? '▸' : (e.name.endsWith('.md') ? '¶' : '·');
+    // 目录行不给「⋯」：目录的改名 / 移动 / 删除都要逐个文件重写（Gitee 没有目录级动作）,
+    // 本版不做。放一个只会说「不支持」的按钮，比没有按钮更烦人。
+    const more = e.type === 'dir'
+      ? ''
+      : '<button class="row-more" data-more="' + esc(e.path) + '" aria-label="更多操作">⋯</button>';
     if (e.type === 'dir') {
-      return '<a class="row" href="#/dir/' + encodeURIComponent(e.path) + '"><span class="ic dir">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a>';
+      return '<div class="row"><a class="row-main" href="#/dir/' + encodeURIComponent(e.path) + '"><span class="ic dir">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a></div>';
     }
     if (e.name.endsWith('.md')) {
-      return '<a class="row" href="#/edit/' + encodeURIComponent(e.path) + '"><span class="ic md">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a>';
+      return '<div class="row"><a class="row-main" href="#/edit/' + encodeURIComponent(e.path) + '"><span class="ic md">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a>' + more + '</div>';
     }
-    return '<div class="row dim"><span class="ic">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></div>';
+    return '<div class="row dim"><span class="row-main"><span class="ic">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></span>' + more + '</div>';
   }).join('');
 
   app.innerHTML =
@@ -403,18 +460,416 @@ function renderList() {
     '<main class="list">' +
     (state.busy ? '<div class="center">加载中…</div>' : (items || '<div class="center dim">（空目录）</div>')) +
     '</main>' +
-    (state.message ? '<div class="toast">' + esc(state.message) + '</div>' : '');
+    // 新建只在目录页出现（笔记页没有它）。显隐由滚动方向决定，见 onScroll。
+    '<button class="fab" id="fab-new" data-act="newFile">＋ 新建笔记</button>' +
+    renderOverlays() +
+    renderToast();
+  applyFab();
+  wireDialog();
 }
+
+/* ---------- 文件操作的浮层：操作表 / 弹窗 / 目录选择器 ---------- */
+
+function renderOverlays() {
+  return renderOps() + renderPicker() + renderDialog();
+}
+
+/** 「⋯」点开的那张表。三个动作，笔记页与目录页同一套。 */
+function renderOps() {
+  if (!state.ops) return '';
+  // 编辑态：三个动作置灰。做的不是「自动先保存再执行」——保存一旦撞上远端改动，
+  // 用户会被扔进冲突合并界面，本来只想改个名字的人得先处理冲突（#11 已定不做）。
+  const editing = state.view === 'editor' && state.mode === 'edit';
+  const cls = editing ? ' is-disabled' : '';
+  return '<div class="sheet-mask" data-act="closeOps"></div>' +
+    '<div class="sheet auto">' +
+    '<div class="sheet-head">' + esc(baseOf(state.ops.path)) + '</div>' +
+    '<div class="ops">' +
+    '<button class="op' + cls + '" data-op="rename">重命名</button>' +
+    '<button class="op' + cls + '" data-op="move">移动</button>' +
+    '<button class="op danger' + cls + '" data-op="delete">删除</button>' +
+    '</div>' +
+    (editing ? '<div class="op-hint">编辑中，先保存或取消</div>' : '') +
+    '<div class="sheet-foot"><div class="sheet-row">' +
+    '<button data-act="closeOps">取消</button></div></div>' +
+    '</div>';
+}
+
+/** 弹窗：填名字（新建 / 重命名）与两次确认（删除 / 移动）共用一套壳。 */
+function renderDialog() {
+  const d = state.dialog;
+  if (!d) return '';
+  let inner;
+  if (d.type === 'prompt') {
+    inner = '<div class="modal-title">' + esc(d.title) + '</div>' +
+      '<div class="modal-hint">' + esc(d.hint) + '</div>' +
+      '<input id="dlg-input" class="dlg-input" type="text" value="' + esc(d.value) + '"' +
+      ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
+      (d.warn ? '<div class="modal-warn">' + d.warn + '</div>' : '') +
+      '<div class="modal-err">' + esc(d.error || '') + '</div>' +
+      '<div class="modal-btns"><button data-act="closeDialog">取消</button>' +
+      '<button class="primary" data-act="submitDialog">' + esc(d.okLabel) + '</button></div>';
+  } else {
+    inner = '<div class="modal-title">' + esc(d.title) + '</div>' +
+      '<div class="modal-body">' + d.body + '</div>' +
+      '<div class="modal-btns"><button data-act="closeDialog">取消</button>' +
+      '<button class="' + (d.danger ? 'danger' : 'primary') + '" data-act="confirmDialog">' +
+      esc(d.okLabel) + '</button></div>';
+  }
+  return '<div class="modal-mask" data-act="closeDialog"></div><div class="modal">' + inner + '</div>';
+}
+
+function renderPicker() {
+  const p = state.picker;
+  if (!p) return '';
+  const dirs = (p.entries || []).filter((e) => e.type === 'dir');
+  let rows = '';
+  if (p.dir) {
+    rows += '<button class="row pick-row" data-enter="' + esc(dirOf(p.dir)) + '">' +
+      '<span class="ic dir">↑</span><span class="nm">上一级</span></button>';
+  }
+  rows += dirs.map((d) =>
+    '<button class="row pick-row" data-enter="' + esc(d.path) + '">' +
+    '<span class="ic dir">▸</span><span class="nm">' + esc(d.name) + '</span></button>').join('');
+  if (!dirs.length && !p.busy) rows += '<div class="center dim">（没有子目录）</div>';
+
+  return '<div class="sheet-mask" data-act="closeDialog"></div>' +
+    '<div class="sheet">' +
+    '<div class="sheet-head">移动到…</div>' +
+    // 这里的路径是**纯文字**，不是面包屑链接：选择器里点一下就退出选择器（改的是页面
+    // 的 hash），那是陷阱。要走上去有上面的「上一级」。
+    '<div class="pick-crumbs">' + (p.dir ? esc(p.dir.split('/').join(' / ')) : '根目录') + '</div>' +
+    '<div class="sheet-body pick-body">' + (p.busy ? '<div class="center">加载中…</div>' : rows) + '</div>' +
+    '<div class="sheet-foot">' +
+    '<div class="pick-target">放这里：<b>' + esc(p.dir || '根目录') + '</b></div>' +
+    (p.error ? '<div class="modal-err">' + esc(p.error) + '</div>' : '') +
+    '<div class="sheet-row"><button data-act="closeDialog">取消</button>' +
+    // 目录还在读的时候这个键不能答应——那时候判不了重名。但它也不该是个死键：
+    // 灰着，点一下会说清为什么（见 pickerMoveHere）
+    '<button class="primary' + (p.busy ? ' is-disabled' : '') + '" data-act="moveHere">就放这里</button>' +
+    '</div></div></div>';
+}
+
+/** 弹窗里的输入框：值存回 state（重渲染不丢），回车等于「确定」。 */
+function wireDialog() {
+  const d = state.dialog;
+  if (!d || d.type !== 'prompt') return;
+  const inp = document.getElementById('dlg-input');
+  if (!inp) return;
+  inp.addEventListener('input', () => { d.value = inp.value; if (d.error) { d.error = ''; } });
+  inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submitDialog(); });
+  inp.focus();
+}
+
+/* ---------- 文件操作：#26 的四个动作 ---------- */
+//
+// 两条硬规矩，四条路都照做：
+//   1. **每一步写都带 sha 核对**。不带 sha 的那次只用于「建新文件」——那是唯一一件
+//      没有旧版本可比的事。不为了历史好看改用 Gitee 的批量提交端点，那个不核对版本。
+//   2. **多步操作先做不会造成损失的那一步**。改名 / 移动一律「先建新、再删旧」：
+//      第二步失败时库里只多一份副本，看得见也删得掉；反过来先删就会真的丢东西。
+
+function closeOverlays() {
+  state.ops = null;
+  state.dialog = null;
+  state.picker = null;
+}
+
+function openCreate() {
+  state.ops = null;
+  state.dialog = {
+    type: 'prompt', action: 'create',
+    title: '新建笔记',
+    hint: '放在 ' + (state.path || '根目录') + '。只填名字，路径由当前目录决定。',
+    value: '', error: '', okLabel: '新建',
+  };
+  render();
+}
+
+function openRename(path) {
+  state.ops = null;
+  state.dialog = {
+    type: 'prompt', action: 'rename', subject: path,
+    title: '重命名',
+    hint: '只改名字，还放在 ' + (dirOf(path) || '根目录') + '。',
+    warn: '别的笔记里指向「' + esc(baseOf(path)) + '」的链接会断——' +
+      '本端只认得文件名，读不到别的笔记的正文，改不了那些链接，也报不出断了几条。',
+    value: stemOf(path), error: '', okLabel: '改名',
+  };
+  render();
+}
+
+function openDelete(path) {
+  state.ops = null;
+  state.dialog = {
+    type: 'confirm', action: 'delete', subject: path,
+    title: '删除「' + baseOf(path) + '」？',
+    body: '删掉就没了，不进回收站，也别处没有副本。' +
+      '删完屏幕下方会给一次<b>撤销</b>，那一下能把原内容照原样放回去。',
+    okLabel: '删除', danger: true,
+  };
+  render();
+}
+
+/** 弹窗的「确定」。填名字的两个动作先过一遍本地规则，省一次注定失败的写。 */
+async function submitDialog() {
+  const d = state.dialog;
+  if (!d || d.type !== 'prompt') return;
+  const n = normalizeNewName(d.value);
+  if (!n.ok) { d.error = n.error; render(); return; }
+  if (d.action === 'create') await doCreate(state.path, n.name);
+  else await doRename(d.subject, n.name);
+}
+
+async function confirmDialog() {
+  const d = state.dialog;
+  if (!d || d.type !== 'confirm') return;
+  if (d.action === 'delete') await doDelete(d.subject);
+  else if (d.action === 'move') await doMove(d.subject, d.to);
+}
+
+/* ---------- 新建 ---------- */
+
+async function doCreate(dir, name) {
+  const path = joinPath(dir, name);
+  closeOverlays();
+  state.busy = true; render();
+  try {
+    // Gitee 不收空内容（`400 content is empty`），一篇空笔记得至少写一个换行
+    await createFile(path, '\n', commitMessage.create(path));
+  } catch (e) {
+    state.busy = false;
+    toast(e.exists ? '这个名字已经有了' : '没建成：' + e.message);
+    render();
+    return;
+  }
+  state.busy = false;
+  // 新建完直接进这篇、并且直接进编辑态：空笔记停在阅读态没有意义，
+  // 不然还得「点一下行 → 点编辑」两下才开始写。
+  state.openInEdit = path;
+  location.hash = '#/edit/' + encodeURIComponent(path);
+  toast('已新建 ' + name);
+}
+
+/* ---------- 删除（含撤销） ---------- */
+
+async function doDelete(path) {
+  closeOverlays();
+  state.busy = true; render();
+  let src;
+  try {
+    // 删除前多读一遍正文：撤销要用它重建。顺带拿到当前 sha——删这一步必须带 sha 核对，
+    // 用旧 sha 会被 Gitee 挡下来（`Blob SHA does not match`），而那道挡是对的：
+    // 这篇要是在别处被改过，直接删就把别人的改动一起删了。
+    src = await readFile(path);
+  } catch (e) {
+    state.busy = false; toast('没删成：' + e.message); render(); return;
+  }
+  try {
+    await deleteFile(src.path, src.sha, commitMessage.remove(path));
+  } catch (e) {
+    state.busy = false;
+    toast(e.conflict ? '这篇在别处被改过，先打开看一眼再删' : '没删成：' + e.message);
+    render();
+    return;
+  }
+  state.undo = { path: src.path, content: src.content, dir: dirOf(path) };
+  state.busy = false;
+  // 删的正是当前打开的那篇 → 回到它所在的目录
+  if (state.view === 'editor') gotoDir(state.undo.dir);
+  else await loadDir(state.path);
+  toast('已删除 ' + baseOf(path), { label: '撤销', run: undoDelete });
+}
+
+async function undoDelete() {
+  const u = state.undo;
+  if (!u) return;
+  state.undo = null;
+  state.busy = true; render();
+  try {
+    // 一次新建就是全部——内容照原样放回去。
+    // 原本是 0 字节的文件只能回来成一个空行：Gitee 建不出空内容的文件（实测）。
+    await createFile(u.path, u.content || '\n', commitMessage.undoDelete(u.path));
+    state.busy = false;
+    toast('已恢复 ' + baseOf(u.path));
+    if (state.view === 'list') await loadDir(state.path);
+  } catch (e) {
+    state.busy = false;
+    toast(e.exists ? '没能恢复：那个位置上又有东西了' : '没能恢复：' + e.message);
+  }
+  render();
+}
+
+/* ---------- 重命名 / 移动：都是「先建新、再删旧」 ---------- */
+
+async function doRename(oldPath, newName) {
+  const dir = dirOf(oldPath);
+  const next = renameTarget(oldPath, newName);
+  closeOverlays();
+  if (next === oldPath) { toast('名字没变'); render(); return; }
+  state.busy = true; render();
+  try {
+    // 先确认新名字没被占。这一步是读，失败了不会留下半成品
+    const entries = await listDir(dir);
+    if (hasName(entries, newName, { except: oldPath })) {
+      state.busy = false;
+      openRename(oldPath);
+      state.dialog.error = '这个名字已经有了';
+      return render();
+    }
+  } catch (e) {
+    state.busy = false; toast('没能开始：' + e.message); render(); return;
+  }
+  await relocate(oldPath, next, 'rename');
+}
+
+async function doMove(from, to) {
+  closeOverlays();
+  await relocate(from, to, 'move');
+}
+
+/**
+ * 改名的执行体。两步，顺序不能反。
+ * @param {'rename'|'move'} verb
+ */
+async function relocate(from, to, verb) {
+  state.busy = true; render();
+  let src;
+  try {
+    // 正文与最新 sha 都现读：删旧那一步要用当前 sha，拿旧的会在半路上被 Gitee 挡下，
+    // 那时候新的已经建好了，就等于白留一份副本。
+    src = await readFile(from);
+  } catch (e) {
+    state.busy = false; toast('没能开始：' + e.message); render(); return;
+  }
+  const msg = verb === 'rename' ? commitMessage.rename(from, to) : commitMessage.move(from, to);
+
+  // 第一步：建新路径。这一步失败等于什么都没发生
+  try {
+    await createFile(to, src.content, msg);
+  } catch (e) {
+    state.busy = false;
+    toast(e.exists ? '那边已经有同名的了，没有改动' : '没有改动：新的那份没建起来（' + e.message + '）');
+    if (state.view === 'list') await loadDir(state.path);
+    render();
+    return;
+  }
+
+  // 第二步：删旧路径。这一步失败库里会同时有新、旧两份——提示必须说清停在这儿，
+  // 一句「失败」会让人以为什么都没动，然后下一次操作就把这个副本忘了
+  try {
+    await deleteFile(from, src.sha, msg);
+  } catch (e) {
+    state.busy = false;
+    toast('新名字已经建好，旧的那份没删掉：' + e.message + '，现在两份都在');
+    if (state.view === 'list') await loadDir(state.path);
+    render();
+    return;
+  }
+
+  state.busy = false;
+  if (state.view === 'editor') location.hash = '#/edit/' + encodeURIComponent(to);
+  else gotoDir(dirOf(to));
+  toast(verb === 'rename' ? '已改名为 ' + baseOf(to) : '已移到 ' + (dirOf(to) || '根目录'));
+}
+
+/* ---------- 移动用的目录选择器 ---------- */
+
+function openPicker(path) {
+  state.ops = null;
+  state.picker = { path, dir: '', entries: [], busy: true, error: '' };
+  render();
+  loadPickerDir('');
+}
+
+async function loadPickerDir(dir) {
+  const p = state.picker;
+  if (!p) return;
+  p.dir = dir; p.busy = true; p.error = ''; render();
+  try {
+    p.entries = await listDir(dir);
+  } catch (e) {
+    p.entries = [];
+    p.error = '目录没读到：' + e.message;
+  }
+  p.busy = false; render();
+}
+
+/** 「就放这里」——先本地判一次同名，再弹确认。 */
+function pickerMoveHere() {
+  const p = state.picker;
+  if (!p) return;
+  // 还没读完就不能答应：这一步要拿目标目录的清单判重名，清单没到手时判不了。
+  // 但也不能装作没听见——点一下就静悄悄什么都不发生，比报错更让人迷惑
+  if (p.busy) { p.error = '这个目录还没读完，稍等一下'; render(); return; }
+  const from = p.path;
+  const to = moveTarget(from, p.dir);
+  if (to === from) { p.error = '它已经在这个目录里了'; render(); return; }
+  if (hasName(p.entries, baseOf(from))) { p.error = '这个目录里已经有同名的了'; render(); return; }
+  // 确认文案与重命名**不同**：断的不是同一批链接
+  state.dialog = {
+    type: 'confirm', action: 'move', subject: from, to,
+    title: '移到 ' + (p.dir || '根目录') + '？',
+    body: '名字还是 <b>' + esc(baseOf(from)) + '</b>。' +
+      '别的笔记里<b>用完整路径写</b>的链接会断，<b>只写名字</b>的那种没事——' +
+      '本端不会替你改链接，也报不出断了几条。',
+    okLabel: '移动',
+  };
+  render();
+}
+
+/* ---------- 悬浮「新建」按钮的显隐 ---------- */
+//
+// 向下滚就收起（把内容让出来），向上滚约 50px 再出现（想操作了）；
+// 内容不足一屏、页面根本滚不动时**始终显示**——否则那个按钮永远出不来。
+const FAB_REVEAL_PX = 50;
+let fabVisible = true;
+let fabAccum = 0;
+let fabLastY = 0;
+
+function pageScrollable() {
+  return document.documentElement.scrollHeight - window.innerHeight > 4;
+}
+
+function applyFab() {
+  const el = document.getElementById('fab-new');
+  if (!el) return;
+  el.classList.toggle('fab-hidden', !(!pageScrollable() || fabVisible));
+}
+
+/** 换一屏（进新目录）就回到默认：露着。 */
+function resetFab() {
+  fabVisible = true;
+  fabAccum = 0;
+  fabLastY = window.scrollY;
+}
+
+function onScroll() {
+  const y = window.scrollY;
+  const dy = y - fabLastY;
+  fabLastY = y;
+  if (!pageScrollable()) {
+    fabVisible = true;
+  } else if (dy > 0) {
+    fabAccum = 0; fabVisible = false;
+  } else if (dy < 0) {
+    fabAccum += -dy;
+    if (fabAccum >= FAB_REVEAL_PX) fabVisible = true;
+  }
+  applyFab();
+}
+window.addEventListener('scroll', onScroll, { passive: true });
+window.addEventListener('resize', onScroll);
 
 function renderEditor() {
   const name = state.path.split('/').pop();
 
   if (state.mode === 'conflict') {
     app.innerHTML =
-      '<header class="bar"><a class="back" href="#/">‹ 返回</a><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
+      '<header class="bar"><a class="back" href="' + backHref() + '">‹ 返回</a><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
       '<main class="editor-body">' + renderConflict() + '</main>' +
       '<footer class="foot"><button class="primary" id="preview-btn">预览改动处理</button></footer>' +
-      (state.message ? '<div class="toast">' + esc(state.message) + '</div>' : '');
+      renderToast();
     const pb = document.getElementById('preview-btn');
     if (pb) pb.addEventListener('click', () => { state.conflict.previewOpen = !state.conflict.previewOpen; state.conflict.copyPrompt = false; render(); });
     if (state.activeFrag != null) requestAnimationFrame(positionBubble);
@@ -429,11 +884,17 @@ function renderEditor() {
     ? '<button class="primary" id="edit-btn">编辑</button>'
     : '<button id="cancel-btn">取消</button><button class="primary" id="save-btn">保存</button>';
 
+  // 笔记页右上角也有「⋯」，内容与目录页相同。编辑态下按钮**不 disable**——
+  // disable 掉就点不动，那句「先保存或取消」也就没人看得见；置灰交给样式，提示交给点一下。
+  const more = '<button class="row-more' + (state.mode === 'edit' ? ' is-disabled' : '') +
+    '" data-more="' + esc(state.path) + '" aria-label="更多操作">⋯</button>';
+
   app.innerHTML =
-    '<header class="bar"><a class="back" href="#/">‹ 返回</a><span class="title">' + esc(name) + '</span></header>' +
+    '<header class="bar"><a class="back" href="' + backHref() + '">‹ 返回</a><span class="title">' + esc(name) + '</span>' + more + '</header>' +
     '<main class="editor-body">' + body + '</main>' +
     '<footer class="foot">' + actions + '</footer>' +
-    (state.message ? '<div class="toast">' + esc(state.message) + '</div>' : '');
+    renderOverlays() +
+    renderToast();
 
   const ta = document.getElementById('editor');
   if (ta) {
@@ -446,6 +907,7 @@ function renderEditor() {
   if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; state.mode = 'read'; render(); });
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
+  wireDialog();
 }
 
 /* ---------- 冲突合并渲染 ---------- */
@@ -550,11 +1012,42 @@ document.addEventListener('click', async (e) => {
   const act = e.target.closest('[data-act]');
   if (act) {
     const a = act.dataset.act;
-    if (a === 'closePreview') { state.conflict.previewOpen = false; state.conflict.copyPrompt = false; render(); }
-    else if (a === 'commitMerge') commitMerge();
-    else if (a === 'openCopy') { state.conflict.copyPrompt = true; render(); }
+    switch (a) {
+      case 'closePreview': state.conflict.previewOpen = false; state.conflict.copyPrompt = false; render(); break;
+      case 'commitMerge': commitMerge(); break;
+      case 'openCopy': state.conflict.copyPrompt = true; render(); break;
+      // ---- #26 文件操作 ----
+      case 'newFile': openCreate(); break;
+      case 'closeOps': state.ops = null; render(); break;
+      case 'closeDialog': state.dialog = null; render(); break;
+      case 'submitDialog': submitDialog(); break;
+      case 'confirmDialog': confirmDialog(); break;
+      case 'moveHere': pickerMoveHere(); break;
+      case 'toastAction': {
+        const t = state.toastAction;
+        state.toastAction = null;
+        if (t) t.run();
+        break;
+      }
+    }
     return;
   }
+  // 「⋯」：按钮是行链接的**兄弟**节点，所以点它不会顺带把笔记打开
+  const moreBtn = e.target.closest('[data-more]');
+  if (moreBtn) { state.ops = { path: moreBtn.dataset.more }; render(); return; }
+  const opBtn = e.target.closest('[data-op]');
+  if (opBtn) {
+    // 编辑态：三个动作置灰，点哪个都只说这一句。不自动先保存再执行
+    if (state.view === 'editor' && state.mode === 'edit') { toast('先保存或取消，再改文件'); return; }
+    const subject = state.ops ? state.ops.path : state.path;
+    const op = opBtn.dataset.op;
+    if (op === 'rename') openRename(subject);
+    else if (op === 'move') openPicker(subject);
+    else if (op === 'delete') openDelete(subject);
+    return;
+  }
+  const enter = e.target.closest('[data-enter]');
+  if (enter) { loadPickerDir(enter.dataset.enter); return; }
   const copy = e.target.closest('[data-copy]');
   if (copy) { saveCopy(copy.dataset.copy); return; }
   // 解不开的双链：不是链接，但点一下要说清它想指向谁（#7 保持这一行为）
@@ -585,4 +1078,5 @@ async function followWikilink(target) {
 ensureIndex().catch(() => {});
 
 window.addEventListener('hashchange', navigate);
+resetFab();
 navigate();

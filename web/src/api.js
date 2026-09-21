@@ -26,6 +26,8 @@ async function api(path, opts = {}) {
     err.status = resp.status;
     err.conflict = data.conflict;
     err.remote = data.remote;
+    err.exists = data.exists;      // 新建撞名
+    err.notFound = data.notFound;  // 要动的东西已经不在了
     throw err;
   }
   return data;
@@ -35,10 +37,24 @@ export const listDir = (path = '') => api(`/api/tree?path=${encodeURIComponent(p
 export const listTree = () => api('/api/tree/recursive');
 export const listHead = () => api('/api/head');
 export const readFile = (path) => api(`/api/file?path=${encodeURIComponent(path)}`);
-export const writeFile = (path, content, sha, message = '手机编辑') =>
+
+// 写：**带 sha 是改，不带 sha 是建**。这个区分由服务端翻译成 Gitee 的两个端点
+// （PUT / POST），浏览器不必知道——但「建新文件不能带 sha」这条得守住。
+// 提交信息不给默认值：四种动作各有各的措辞，默认值只会让某一处悄悄漏掉前缀。
+export const writeFile = (path, content, sha, message) =>
   api('/api/file', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content, sha, message }),
   });
+
+export const createFile = (path, content, message) => writeFile(path, content, undefined, message);
+
+export const deleteFile = (path, sha, message) =>
+  api('/api/file', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, sha, message }),
+  });
+
 export const rawUrl = (path) => `/api/raw?path=${encodeURIComponent(path)}`;
