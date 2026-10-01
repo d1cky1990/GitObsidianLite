@@ -9,9 +9,14 @@ import {
 import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
 } from './file-names.js';
+import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+
+// 待办勾选框（#13/#27）：渲染钩子把列表项开头的 `[ ]`/`[x]` 换成方框，
+// 方框上带它在源文里的行号，点击时按行号切换（见 onTaskClick）。
+installTaskRule(md);
 
 // 双链与图片共用同一份索引（`#7` 建的，含非 `.md` 文件的 basename → 路径）：
 // 双链拿它判「解不解得开」，图片拿它在相对解析失败后按文件名反查（`#8`）。
@@ -861,6 +866,66 @@ function onScroll() {
 window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('resize', onScroll);
 
+/* ---------- 待办勾选框（#13/#27） ---------- */
+//
+// 点一个存一个（#13 定稿）：点下立即在页面上勾上（乐观），排队逐个提交，每次都带
+// sha 核对。失败 → 这一勾退回原样、提示，**排在其后的全部停住**——正文基准已经
+// 不确定，继续提交等于把没见过的内容往仓库里写。
+// 远端被改过（sha 核对不过）不自动进冲突合并界面：从勾选框掉进合并界面会把人打蒙。
+const taskQueue = [];
+let taskSaving = false;
+
+/** 点了某个方框：先乐观切换这一行，再排队保存。 */
+function onTaskClick(line) {
+  if (state.view !== 'editor' || state.mode !== 'read') return;
+  const next = toggleTaskInContent(state.file.content, line);
+  if (next === null) return; // 行上没有标记（内容被别处改过）——不动
+  const y = window.scrollY;
+  state.file.content = next;
+  render();
+  window.scrollTo(0, y);
+  taskQueue.push(line);
+  pumpTaskQueue();
+}
+
+async function pumpTaskQueue() {
+  if (taskSaving) return;
+  taskSaving = true;
+  try {
+    while (taskQueue.length) {
+      // 离开阅读态（进编辑 / 冲突 / 返回目录）就别再写了：界面上没人等着它，
+      // 而且编辑态以 state.draft 为准，后台改 content 会把两边搅乱
+      if (state.view !== 'editor' || state.mode !== 'read') { taskQueue.length = 0; return; }
+      const line = taskQueue.shift();
+      const nowDone = isTaskDoneLine(state.file.content.split('\n')[line]);
+      try {
+        const r = await writeFile(
+          state.file.path,
+          state.file.content,
+          state.file.sha,
+          commitMessage.check(state.file.path, nowDone),
+        );
+        state.file.sha = r.sha;
+        toast('已保存');
+      } catch (e) {
+        // 退回这一勾：此前已存成功的勾保持不动（它们已在 content 里），只把最后这次切回去
+        const reverted = toggleTaskInContent(state.file.content, line);
+        if (reverted !== null) state.file.content = reverted;
+        taskQueue.length = 0;
+        toast(e.conflict
+          ? '这篇在别处被改过，没存上。重新打开这篇再勾'
+          : '没存上：' + e.message);
+        const y = window.scrollY;
+        render();
+        window.scrollTo(0, y);
+        return;
+      }
+    }
+  } finally {
+    taskSaving = false;
+  }
+}
+
 function renderEditor() {
   const name = state.path.split('/').pop();
 
@@ -1009,6 +1074,9 @@ document.addEventListener('click', async (e) => {
     render();
     return;
   }
+  // 待办勾选框：只有阅读态渲染得出它，编辑态 / 冲突态都没有
+  const taskBox = e.target.closest('[data-task-line]');
+  if (taskBox) { onTaskClick(+taskBox.dataset.taskLine); return; }
   const act = e.target.closest('[data-act]');
   if (act) {
     const a = act.dataset.act;
