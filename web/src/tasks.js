@@ -1,37 +1,74 @@
-// 阅读态的待办勾选框（#13 定稿 → #27 落地）。
+// 阅读态的待办勾选框（#13 定稿 → #27 落地 → #28 扩到四态）。
 //
 // 两条规则住这里，其余（点击、排队、提交）住在 main.js：
-//   1. **什么算任务**：与 GitHub / Obsidian 一致——只有「列表项开头」的
-//      `[ ]` / `[x]` / `[X]` 渲染成方框；引用块里的列表照常算（它仍是列表项），
+//   1. **什么算任务**：与 GitHub / Obsidian 一致——只有「列表项开头」的 `[?]` 渲染成方框
+//      （`?` 是方括号里的任意单字符）；引用块里的列表照常算（它仍是列表项），
 //      普通段落、表格、列表项续行里的原样是文字，不可点。
-//   2. **点了怎么改文件**：只动那一行开头的标记（`[ ]` ↔ `[x]`），一行里的其他
-//      字节一个不碰——这是「带 sha 核对的单文件写」能放心用的前提。
+//   2. **点了怎么改文件**：翻行首那一个状态字符，外加行尾 `✅`/`❌` 那一段的增删
+//      （见 `task-markers.js`）——一行里的其他字节一个不碰。
+//
+// 状态字符是**单字符**，认得的只有四个：` `（未勾）`x`/`X`（已勾）`/`（进行中）`-`（取消）。
+// 认不得的（`[?]` `[>]`）照旧画成方框、字符原样显示——**不退化成文字**：它显然是个任务，
+// 装作没看见比画个方框更糟。点击一律落「未勾 ↔ 已勾」这个二值上。
 //
 // 切换相关是纯函数（不碰 DOM），所以能进 `node --test`；渲染钩子跟着 markdown-it
 // 走，测试里同样用真实渲染器整体跑一遍再断言，不另写复刻逻辑的复算脚本。
 
-/** 列表项开头的任务标记。要求尾随空格，与 GitHub / Obsidian 的识别一致。 */
-const ITEM_MARK_RE = /^\[([ xX])\] /;
+import { addDoneDate, removeDoneDate, removeCancelDate, hasMarker, todayString } from './task-markers.js';
 
-/** 整行视角：这一行是不是一个（已勾上的）任务项。切换前后都用它判状态。 */
-const LINE_TASK_RE = /^(\s*)([-*+]|\d{1,9}[.)])([ \t]+\[)([ xX])(\].*)$/;
+/** 列表项开头的任务标记。要求尾随空格，与 GitHub / Obsidian 的识别一致。 */
+const ITEM_MARK_RE = /^\[([^\]])\] /;
+
+/** 整行视角：这一行是不是一个任务项。切换前后都用它判状态。 */
+const LINE_TASK_RE = /^(\s*)([-*+]|\d{1,9}[.)])([ \t]+\[)([^\]])(\].*)$/;
+
+/** 已勾上的两个写法。 */
+const isDoneState = (ch) => ch === 'x' || ch === 'X';
 
 /**
- * 切换一行开头的任务标记。只认「可选项 + 标记」这种列表项写法。
+ * 切换一行开头的任务标记，顺带处理完成日期。
  *
+ * 勾上：摘掉 `❌ 日期`——任务不能同时是「取消」和「完成」；若这一行**带 Tasks 记号**
+ *       就在行尾补 `✅ 当天日期`。纯清单行（`- [ ] 买牛奶`）不加，实测库里这类
+ *       清单本来就不写日期，硬加会偏离既有习惯。
+ * 取消：摘掉 `✅ 日期`。
+ *
+ * 「未勾 ↔ 已勾」这个二值里，**已勾只算 `x` / `X`**。`[/]`（进行中）`[-]`（取消）
+ * 以及认不得的状态被点，都是**往「已勾」走**——不是反过来。
+ *
+ * @param {string} lineText
+ * @param {string} [today] `YYYY-MM-DD`，测试里固定用
  * @returns {string|null} 切换后的整行；不是任务项行则 null（调用方原样跳过）。
  */
-export function toggleTaskLine(lineText) {
-  const m = String(lineText).match(LINE_TASK_RE);
+export function toggleTaskLine(lineText, today = todayString()) {
+  const s = String(lineText);
+  const m = s.match(LINE_TASK_RE);
   if (!m) return null;
-  const next = m[4] === ' ' ? 'x' : ' ';
-  return m[1] + m[2] + m[3] + next + m[5];
+  const wasDone = isDoneState(m[4]);
+
+  let body = s;
+  if (wasDone) {
+    body = removeDoneDate(body);
+  } else {
+    // 「带不带记号」要问**摘之前**的原文：`❌ 日期` 自己就是一个 Tasks 记号。
+    // 先摘再问的话，`- [-] 退掉旧订阅 ❌ 2026-09-30` 这种「记号只有 ❌」的行会被
+    // 答成「不带记号」，于是 ✅ 永远补不上——实测踩到过一次（#28 验收）。
+    const hadMarker = hasMarker(s);
+    body = removeCancelDate(body);
+    if (hadMarker) body = addDoneDate(body, today);
+  }
+
+  // 状态字符最后翻。上面的手术都落在行首标记之后，不会挪动它；重匹配一次是
+  // 为了拿准手术后的前缀（`- [x] ✅ …` 摘掉后 `]` 与 `✅` 之间的空格会消失）。
+  const bm = body.match(LINE_TASK_RE);
+  if (!bm) return null;
+  return bm[1] + bm[2] + bm[3] + (wasDone ? ' ' : 'x') + bm[5];
 }
 
 /** 这一行的任务是不是勾上的。非任务行返回 false——只用来给提交信息选词。 */
 export function isTaskDoneLine(lineText) {
   const m = String(lineText).match(LINE_TASK_RE);
-  return !!m && m[4] !== ' ';
+  return !!m && isDoneState(m[4]);
 }
 
 /**
@@ -42,10 +79,10 @@ export function isTaskDoneLine(lineText) {
  *
  * @returns {string|null} 切换后的整篇；行号越界或该行不是任务项行则 null。
  */
-export function toggleTaskInContent(content, line) {
+export function toggleTaskInContent(content, line, today = todayString()) {
   const lines = String(content).split('\n');
   if (!Number.isInteger(line) || line < 0 || line >= lines.length) return null;
-  const toggled = toggleTaskLine(lines[line]);
+  const toggled = toggleTaskLine(lines[line], today);
   if (toggled === null) return null;
   lines[line] = toggled;
   return lines.join('\n');
@@ -57,6 +94,8 @@ export function toggleTaskInContent(content, line) {
  * 不会横穿方框。
  */
 export function installTaskRule(md) {
+  const esc = md.utils.escapeHtml;
+
   md.core.ruler.push('obsidian_task_items', (state) => {
     const tokens = state.tokens;
     for (let i = 2; i < tokens.length; i++) {
@@ -69,14 +108,15 @@ export function installTaskRule(md) {
       if (first.type !== 'text') continue;
       const m = first.content.match(ITEM_MARK_RE);
       if (!m) continue;
-      const done = m[1] !== ' ';
+      const state_ = m[1];
+      const done = isDoneState(state_);
       const line = inline.map ? inline.map[0] : -1;
       if (line < 0) continue;
 
       first.content = first.content.slice(m[0].length);
       const box = new state.Token('task_checkbox', '', 0);
       box.attrSet('data-task-line', String(line));
-      box.attrSet('data-done', done ? '1' : '0');
+      box.attrSet('data-state', state_);
       const open = new state.Token('html_inline', '', 0);
       open.content = '<span class="task-text">';
       const close = new state.Token('html_inline', '', 0);
@@ -92,8 +132,14 @@ export function installTaskRule(md) {
 
   md.renderer.rules.task_checkbox = (tokens, idx) => {
     const t = tokens[idx];
-    const done = t.attrGet('data-done') === '1';
+    const st = t.attrGet('data-state');
+    const done = isDoneState(st);
+    // 已勾用背景 SVG 画对勾（不占文字位，划线才不会横穿）；其余状态把字符原样放进方框：
+    // `/` 进行中、`-` 取消、`?` 之类认不得的照旧显示——「不退化成一串文字」是定稿要求。
+    const mark = !done && st !== ' ' ? esc(st) : '';
     return '<button type="button" class="task-box' + (done ? ' is-done' : '') +
-      '" data-task-line="' + t.attrGet('data-task-line') + '" aria-label="切换待办勾选"></button>';
+      '" data-task-line="' + t.attrGet('data-task-line') +
+      '" data-state="' + esc(st) + '"' +
+      ' aria-label="切换待办勾选">' + mark + '</button>';
   };
 }

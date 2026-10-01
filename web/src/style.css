@@ -118,15 +118,18 @@ a { color: inherit; text-decoration: none; }
 .md th, .md td { border: 1px solid var(--line); padding: 6px 10px; }
 .md ul, .md ol { padding-left: 1.4em; }
 
-/* ---------- 待办勾选框（#13/#27） ---------- */
+/* ---------- 待办勾选框（#13/#27/#28） ---------- */
 /* 与 Obsidian 一致：方框替换掉列表圆点，而不是叠在它旁边 */
 .md li.task-item { list-style: none; }
 /* 勾选标记用背景图不用文字——已完成项的划线只落在 .task-text 上，不横穿方框 */
 .md .task-box {
-  appearance: none; display: inline-block; vertical-align: -0.12em;
+  appearance: none; display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: -0.12em;
   width: 1.05em; height: 1.05em; margin-right: 0.4em;
   border: 1.5px solid var(--muted); border-radius: 4px;
   background: var(--card); padding: 0; cursor: pointer;
+  /* 进行中 / 取消 / 认不得的状态把字符画在方框里（#28），字号得压小才装得下 */
+  font-size: 0.72em; line-height: 1; color: var(--muted);
 }
 .md .task-box:active { border-color: var(--accent); }
 .md .task-box.is-done {
@@ -136,6 +139,27 @@ a { color: inherit; text-decoration: none; }
     center / 72% no-repeat;
 }
 .md li.task-done .task-text { color: var(--muted); text-decoration: line-through; }
+
+/* ---------- Tasks 记号（#28） ---------- */
+/* 胶囊；跟在文字后面，不做右侧对齐——窄屏上排成一列更乱，留到真机上看过再定 */
+.md .task-tag {
+  display: inline-block; margin: 0 2px; padding: 0 6px;
+  border-radius: 9px; background: #eceae2; color: #6b675c;
+  font-size: 0.78em; line-height: 1.7; white-space: nowrap;
+  vertical-align: 1px;
+}
+/* 已勾项的划线不能横穿胶囊——那是标签，不是被划掉的内容 */
+.md li.task-done .task-text .task-tag { text-decoration: none; }
+
+/* 查询块占位：一句说明 + 可展开原文，不执行 */
+.md details.tasks-query {
+  margin: 0.6em 0; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: #f8f7f2; color: var(--muted); font-size: 0.9em;
+}
+.md details.tasks-query summary { cursor: pointer; }
+.md details.tasks-query[open] summary { margin-bottom: 6px; }
+.md details.tasks-query pre { margin: 0; background: #f0efe9; padding: 8px 10px; border-radius: 6px; }
 
 .editor {
   width: 100%; min-height: 60vh;

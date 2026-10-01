@@ -10,6 +10,10 @@ import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
 } from './file-names.js';
 import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js';
+// Tasks 记号（#28）：列表项里的 ⏳📅✅… 翻成胶囊标签；```tasks 查询块给一句说明加
+// 可展开原文，不执行。两者的规则各自住在自己的文件里。
+import { installTaskMarkerRule } from './task-markers.js';
+import { installTasksQueryRule } from './tasks-query.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -17,6 +21,9 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 // 待办勾选框（#13/#27）：渲染钩子把列表项开头的 `[ ]`/`[x]` 换成方框，
 // 方框上带它在源文里的行号，点击时按行号切换（见 onTaskClick）。
 installTaskRule(md);
+// 顺序要紧：记号的钩子要跑在勾选框之后——它切的是勾选框留下的那段文字。
+installTaskMarkerRule(md);
+installTasksQueryRule(md);
 
 // 双链与图片共用同一份索引（`#7` 建的，含非 `.md` 文件的 basename → 路径）：
 // 双链拿它判「解不解得开」，图片拿它在相对解析失败后按文件名反查（`#8`）。
@@ -866,25 +873,33 @@ function onScroll() {
 window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('resize', onScroll);
 
-/* ---------- 待办勾选框（#13/#27） ---------- */
+/* ---------- 待办勾选框（#13/#27/#28） ---------- */
 //
 // 点一个存一个（#13 定稿）：点下立即在页面上勾上（乐观），排队逐个提交，每次都带
 // sha 核对。失败 → 这一勾退回原样、提示，**排在其后的全部停住**——正文基准已经
 // 不确定，继续提交等于把没见过的内容往仓库里写。
 // 远端被改过（sha 核对不过）不自动进冲突合并界面：从勾选框掉进合并界面会把人打蒙。
+//
+// 每条排队项都揣着**点下去之前的那份正文**（`prev`）。失败时按它整份还原，而不是
+// 「再切一次」——#28 起切换会顺带增删 `✅` 日期，再切一次回不到原样（原来那个日期
+// 已经被今天顶掉了）。整份还原还有个好处：排在后面的那几个乐观勾会跟着一起消失，
+// 界面上不留「看着勾上了、其实没存上」的假勾。
 const taskQueue = [];
 let taskSaving = false;
 
 /** 点了某个方框：先乐观切换这一行，再排队保存。 */
 function onTaskClick(line) {
   if (state.view !== 'editor' || state.mode !== 'read') return;
-  const next = toggleTaskInContent(state.file.content, line);
+  const prev = state.file.content;
+  const next = toggleTaskInContent(prev, line);
   if (next === null) return; // 行上没有标记（内容被别处改过）——不动
+  // 提交信息按「这一勾的结果」选词，点下时就定下来，之后正文再变也不影响它
+  const done = isTaskDoneLine(next.split('\n')[line]);
   const y = window.scrollY;
   state.file.content = next;
   render();
   window.scrollTo(0, y);
-  taskQueue.push(line);
+  taskQueue.push({ prev, done });
   pumpTaskQueue();
 }
 
@@ -896,21 +911,19 @@ async function pumpTaskQueue() {
       // 离开阅读态（进编辑 / 冲突 / 返回目录）就别再写了：界面上没人等着它，
       // 而且编辑态以 state.draft 为准，后台改 content 会把两边搅乱
       if (state.view !== 'editor' || state.mode !== 'read') { taskQueue.length = 0; return; }
-      const line = taskQueue.shift();
-      const nowDone = isTaskDoneLine(state.file.content.split('\n')[line]);
+      const job = taskQueue[0];
       try {
         const r = await writeFile(
           state.file.path,
           state.file.content,
           state.file.sha,
-          commitMessage.check(state.file.path, nowDone),
+          commitMessage.check(state.file.path, job.done),
         );
         state.file.sha = r.sha;
+        taskQueue.shift(); // 存成了才出队——失败时它还得留着还原用
         toast('已保存');
       } catch (e) {
-        // 退回这一勾：此前已存成功的勾保持不动（它们已在 content 里），只把最后这次切回去
-        const reverted = toggleTaskInContent(state.file.content, line);
-        if (reverted !== null) state.file.content = reverted;
+        state.file.content = job.prev;
         taskQueue.length = 0;
         toast(e.conflict
           ? '这篇在别处被改过，没存上。重新打开这篇再勾'

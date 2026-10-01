@@ -99,3 +99,103 @@ test('渲染：切换行号与切换函数闭环——渲染报的行号，切�
   }
   assert.equal(draft, '# 今日\n\n- [x] 买牛奶\n- [ ] 寄快递\n');
 });
+
+/* ---------- 四态与认不得的状态（#28） ---------- */
+
+test('渲染：四态与认不得的状态都画成方框，字符原样显示', () => {
+  const html = render('- [ ] 待办\n- [x] 已办\n- [/] 进行中\n- [-] 取消\n- [?] 认不得\n');
+  assert.equal(countBoxes(html), 5);
+  assert.match(html, /data-state=" "/);
+  assert.match(html, /data-state="x"/);
+  assert.match(html, /data-state="\/"/);
+  assert.match(html, /data-state="-"/);
+  // 认不得的照旧画方框、字符原样显示——不退化成「[?] 认不得」一串文字
+  assert.match(html, /data-state="\?"[^>]*>\?<\/button>/);
+  assert.match(html, />\/<\/button>/);
+  assert.match(html, />-<\/button>/);
+  // 只有 [x] 带 is-done
+  assert.equal((html.match(/is-done/g) || []).length, 1);
+  // 方框里不该再出现方括号
+  assert.doesNotMatch(html, /\[[ x/?-]\]/);
+});
+
+test('渲染：续行与正文里的方括号仍不算任务', () => {
+  assert.equal(countBoxes(render('- [ ] 第一行\n  [?] 续行不是任务\n')), 1);
+  assert.equal(countBoxes(render('正文 [?] 夹在中间\n')), 0);
+});
+
+/* ---------- 勾选顺带处理完成日期（#28） ---------- */
+
+const TODAY = '2026-10-01';
+
+test('切换：勾上带 Tasks 记号的行 → 行尾补 ✅ 当天；纯清单行不补', () => {
+  assert.equal(
+    toggleTaskLine('- [ ] 写周报 ⏳ 2026-01-26', TODAY),
+    '- [x] 写周报 ⏳ 2026-01-26 ✅ 2026-10-01',
+  );
+  assert.equal(toggleTaskLine('- [ ] 买牛奶', TODAY), '- [x] 买牛奶', '纯清单行不该被加日期');
+  assert.equal(toggleTaskLine('  - [ ] 买牛奶 #工作', TODAY), '  - [x] 买牛奶 #工作', '标签不是 Tasks 记号');
+});
+
+test('切换：取消勾选 → 摘掉 ✅，行内其他记号一个不碰', () => {
+  assert.equal(
+    toggleTaskLine('- [x] 写周报 ⏳ 2026-01-26 ✅ 2026-01-27', TODAY),
+    '- [ ] 写周报 ⏳ 2026-01-26',
+  );
+});
+
+test('切换：进行中 / 已取消 / 认不得的状态被点 → 往「完成」走', () => {
+  assert.equal(
+    toggleTaskLine('- [/] 写周报 ⏳ 2026-01-26', TODAY),
+    '- [x] 写周报 ⏳ 2026-01-26 ✅ 2026-10-01',
+  );
+  // 已取消：补 ✅ 的同时摘掉 ❌——不能又取消又完成
+  assert.equal(
+    toggleTaskLine('- [-] 不做了 ⏳ 2026-01-26 ❌ 2026-01-27', TODAY),
+    '- [x] 不做了 ⏳ 2026-01-26 ✅ 2026-10-01',
+  );
+  // 记号**只有 ❌** 的行：❌ 自己就是记号，摘掉它之后仍应算「带记号」而补上 ✅。
+  // 判「带不带记号」必须先于摘 ❌，否则这行会静默丢掉 ✅。
+  assert.equal(
+    toggleTaskLine('- [-] 退掉旧订阅 ❌ 2026-01-27', TODAY),
+    '- [x] 退掉旧订阅 ✅ 2026-10-01',
+  );
+  assert.equal(
+    toggleTaskLine('- [?] 什么 ⏳ 2026-01-26', TODAY),
+    '- [x] 什么 ⏳ 2026-01-26 ✅ 2026-10-01',
+  );
+  // 反过来：已勾的点一下回到未勾，不是「再完成一次」
+  assert.equal(toggleTaskLine('- [x] 什么 ⏳ 2026-01-26', TODAY), '- [ ] 什么 ⏳ 2026-01-26');
+});
+
+test('切换：同一行已有 ✅ 再勾一次——只有一个 ✅，日期改成当天', () => {
+  const line = '- [ ] 写周报 ⏳ 2026-01-26 ✅ 2026-01-27';
+  const once = toggleTaskLine(line, TODAY);
+  assert.equal(once, '- [x] 写周报 ⏳ 2026-01-26 ✅ 2026-10-01');
+  assert.equal((once.match(/✅/g) || []).length, 1, '不能连写两个 ✅');
+});
+
+test('切换：行尾带空格时，✅ 补在空格之前', () => {
+  assert.equal(
+    toggleTaskLine('- [ ] 买冲锋裤 🛫 2026-09-29 ', TODAY),
+    '- [x] 买冲锋裤 🛫 2026-09-29 ✅ 2026-10-01 ',
+  );
+});
+
+test('整篇切换：带日期的行，行号仍对得上且行数不变', () => {
+  const content = `# 今日\n\n- [ ] 甲 ⏳ 2026-01-26\n- [x] 乙 ✅ 2026-01-27\n- [ ] 丙\n`;
+  const once = toggleTaskInContent(content, 2, TODAY);
+  assert.equal(once, `# 今日\n\n- [x] 甲 ⏳ 2026-01-26 ✅ 2026-10-01\n- [x] 乙 ✅ 2026-01-27\n- [ ] 丙\n`);
+  assert.equal(once.split('\n').length, content.split('\n').length, '不能增删行——否则排队中的行号会漂');
+  const twice = toggleTaskInContent(content, 3, TODAY);
+  assert.equal(twice, `# 今日\n\n- [ ] 甲 ⏳ 2026-01-26\n- [ ] 乙\n- [ ] 丙\n`);
+});
+
+test('isTaskDoneLine：只认 x / X，进行中与取消都不算已完成', () => {
+  assert.equal(isTaskDoneLine('- [x] 已办'), true);
+  assert.equal(isTaskDoneLine('- [X] 已办'), true);
+  assert.equal(isTaskDoneLine('- [ ] 待办'), false);
+  assert.equal(isTaskDoneLine('- [/] 进行中'), false);
+  assert.equal(isTaskDoneLine('- [-] 取消'), false);
+  assert.equal(isTaskDoneLine('- 普通'), false);
+});
