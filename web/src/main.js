@@ -14,6 +14,9 @@ import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js
 // 可展开原文，不执行。两者的规则各自住在自己的文件里。
 import { installTaskMarkerRule } from './task-markers.js';
 import { installTasksQueryRule } from './tasks-query.js';
+// 标签（#14 定稿 → #29）：`#标签` 画成小胶囊。识别规则与「画一个标签」共用一份，
+// #12 的声明区将来要画 YAML 的 `tags` 字段也走它（`tagChipHtml`）。
+import { installTagRule } from './tags.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -42,6 +45,10 @@ installVaultImageRule(md, {
 });
 
 installWikilinkRule(md, { getIndex: () => wikilinkIndex, rawUrl });
+
+// 标签（#29）：插在 link 规则之前——`link` 一旦命中就整体吃掉了，插在它后面
+// 等于放跑 `[文字](url#锚点)` 里的锚点。
+installTagRule(md);
 
 const app = document.getElementById('app');
 
