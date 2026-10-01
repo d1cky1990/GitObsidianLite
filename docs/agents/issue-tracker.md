@@ -58,6 +58,14 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer to the map's Decisions-so-far. **Pointer = the ticket's own resolution comment permalink**, not a gist: this repo's `gh` token carries only `admin:org, repo, workflow` scopes, so `gh gist create` is unavailable. Use `gh issue comment <n> --body "..."` and link the returned comment URL.
 
+### Briefing research subagents
+
+`research` tickets are resolved by subagents, and an unbriefed one will run live experiments against the user's accounts. Observed on the 2026-09-19 charting run:
+
+- **Say "read-only" out loud.** A subagent created a throwaway repo on the user's GitHub account to observe a conflict response, then could not delete it — the `gh` token lacks `delete_repo`. State that the agent must not create, modify, or delete resources on any platform and must not register accounts. Where a fact can only be established by a live test, the agent labels it "unverified — needs the owner" and describes the test instead of running it.
+- **`gh` may be unauthenticated inside a subagent** even when the parent shell is logged in. Tell it to write the comment body to `.scratch/` and report the path, rather than stalling or trying to log in.
+- **Capture the created issue's number explicitly**, and check for a duplicate before re-running: a proxy hiccup can swallow the URL of a *successful* create, and a blind retry produces a second issue with the same title.
+
 ## Prior art
 
 The first effort predates this configuration and lives as a **read-only decision archive** at `docs/design/obsidian-mobile-web/` — `map.md`, `spec.md`, four resolved tickets under `issues/`, three research notes under `research/`.
