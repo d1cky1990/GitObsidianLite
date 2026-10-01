@@ -21,11 +21,18 @@
 //   node scripts/check-secrets.mjs --all    检查工作区全部文件
 //
 // 豁免一条：在该行任意位置写 `secret-scan:allow`。
+//
+// 调 git 一律走**异步**（见下面的 git()）：本机实测 `execFileSync` 会以 EBUSY 失败——
+// 同步启动子进程被挡，异步正常。检查器因此整个崩掉（退出码 2），钩子形同虚设。
+// 顺带的好处：全量扫描不再阻塞事件循环。
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+const execFileAsync = promisify(execFile);
 
 /** 行内豁免标记 */
 export const ALLOW_MARKER = /secret-scan:\s*allow/;
@@ -309,18 +316,24 @@ function maskValue(v) {
 
 /* ---------- CLI ---------- */
 
-function git(args, opts = {}) {
-  return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...opts });
+/** 跑一条 git 命令，返回 stdout 字符串（失败则抛，由调用方决定怎么处理）。 */
+async function git(args, opts = {}) {
+  const { stdout } = await execFileAsync('git', args, {
+    encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...opts,
+  });
+  return stdout;
 }
 
-function stagedFiles() {
-  const out = git(['-c', 'core.quotepath=false', 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z']);
+async function stagedFiles() {
+  const out = await git(['-c', 'core.quotepath=false', 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z']);
   return out.split('\0').filter(Boolean);
 }
 
-function stagedContent(file) {
+async function stagedContent(file) {
   try {
-    const buf = execFileSync('git', ['show', `:${file}`], { maxBuffer: 64 * 1024 * 1024 });
+    const { stdout: buf } = await execFileAsync('git', ['show', `:${file}`], {
+      encoding: 'buffer', maxBuffer: 64 * 1024 * 1024,
+    });
     return buf.includes(0) ? null : buf.toString('utf8'); // 二进制跳过内容规则
   } catch {
     return null;
@@ -328,10 +341,10 @@ function stagedContent(file) {
 }
 
 /** 所有「有可能被提交」的文件：已跟踪的 + 未跟踪但没被忽略的。被忽略的不算。 */
-function committableFiles() {
+async function committableFiles() {
   const opt = ['-c', 'core.quotepath=false'];
-  const tracked = git([...opt, 'ls-files', '-z']).split('\0');
-  const others = git([...opt, 'ls-files', '--others', '--exclude-standard', '-z']).split('\0');
+  const tracked = (await git([...opt, 'ls-files', '-z'])).split('\0');
+  const others = (await git([...opt, 'ls-files', '--others', '--exclude-standard', '-z'])).split('\0');
   return [...new Set([...tracked, ...others])].filter(Boolean);
 }
 
@@ -353,7 +366,7 @@ function report(hits, label) {
   return 1;
 }
 
-function main(argv) {
+async function main(argv) {
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log('用法：node scripts/check-secrets.mjs [--all | --status]');
     console.log('  默认      检查暂存内容（pre-commit 调它）');
@@ -362,12 +375,12 @@ function main(argv) {
     return 0;
   }
 
-  const root = git(['rev-parse', '--show-toplevel']).trim();
+  const root = (await git(['rev-parse', '--show-toplevel'])).trim();
   process.chdir(root);
 
   if (argv.includes('--status')) {
     let current = '';
-    try { current = git(['config', '--get', 'core.hooksPath']).trim(); } catch { /* 未设置 */ }
+    try { current = (await git(['config', '--get', 'core.hooksPath'])).trim(); } catch { /* 未设置 */ }
     const ok = current === WANTED_HOOKS_PATH;
     console.log(`仓库根      ${root}`);
     console.log(`core.hooksPath  ${current || '(未设置)'}`);
@@ -380,13 +393,13 @@ function main(argv) {
   const fingerprints = loadFingerprints(root);
   const hits = [];
   let checked = 0;
-  const files = mode === 'staged' ? stagedFiles() : committableFiles();
+  const files = mode === 'staged' ? await stagedFiles() : await committableFiles();
   for (const file of files) {
     const p = checkPath(file);
     if (p) hits.push(p);
     let text;
     if (mode === 'staged') {
-      text = stagedContent(file);
+      text = await stagedContent(file);
     } else {
       try {
         const buf = fs.readFileSync(file);
@@ -407,7 +420,7 @@ function main(argv) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    process.exitCode = main(process.argv.slice(2));
+    process.exitCode = await main(process.argv.slice(2));
   } catch (e) {
     console.error('check-secrets 自身出错：', e && e.message);
     process.exitCode = 2;
