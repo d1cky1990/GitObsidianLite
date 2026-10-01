@@ -26,4 +26,4 @@
 
 ## 明确不在范围内
 
-反向链接面板、标签图、嵌入 `![[...]]`、callout、任务勾选、多仓库切换、分支选择、App 打包本身。完整清单见 [`map.md`](map.md) 的 Out of scope 一节与 `spec.md` §1。
+完整清单见 [`spec.md`](spec.md) §1 的「非目标」——**名单只保留那一份**，此处不复述（[ADR-0002](../../adr/0002-memory-is-not-the-knowledge-base.md)：一个事实不许住两处；复述出来的第二份没有人会去校对）。[`map.md`](map.md) 的 Out of scope 一节是当时的快照，只读，不作现行依据。
