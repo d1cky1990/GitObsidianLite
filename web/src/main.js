@@ -17,6 +17,9 @@ import { installTasksQueryRule } from './tasks-query.js';
 // 标签（#14 定稿 → #29）：`#标签` 画成小胶囊。识别规则与「画一个标签」共用一份，
 // #12 的声明区将来要画 YAML 的 `tags` 字段也走它（`tagChipHtml`）。
 import { installTagRule } from './tags.js';
+// 声明区（#12 定稿 → #30）：文件开头那段 YAML 摘出来，画在正文上方一块可折叠的区域。
+// 它挂的是块级规则，所以顺序跟上面几条行内规则不相干；只要排在 `hr` 之前就行（见其注释）。
+import { installFrontmatterRule } from './frontmatter.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -49,6 +52,10 @@ installWikilinkRule(md, { getIndex: () => wikilinkIndex, rawUrl });
 // 标签（#29）：插在 link 规则之前——`link` 一旦命中就整体吃掉了，插在它后面
 // 等于放跑 `[文字](url#锚点)` 里的锚点。
 installTagRule(md);
+
+// 声明区（#30）：块级规则，认的是文件最开头那两条 `---`。挂在这里只是跟其他几条
+// 摆在一起；它必须在 `hr` 之前跑（否则 `---` 已经变成分隔线了），这一点由它自己保证。
+installFrontmatterRule(md);
 
 const app = document.getElementById('app');
 
@@ -194,12 +201,21 @@ function ensureIndex() {
  * 从插件一路看下来，改名的代价比留一个说谎的函数名小。
  *
  * 只在只读态补：编辑中重渲染会丢光标与未提交的输入。
- * 补渲染会整块替换 `#app`，所以要自己把滚动位置带过去——否则用户读着读着页面跳回顶部。
+ * 补渲染会整块替换 `#app`，所以要自己把两样东西带过去——否则用户读着读着页面跳回顶部，
+ * 或者刚点开的声明区自己又收起来（那一下不比跳回顶部轻）。
  */
 function repaintWithIndex() {
   if (state.view !== 'editor' || state.mode !== 'read') return;
   const y = window.scrollY;
+  // 声明区（#30）的展开态跟着走一趟：它是原生 <details>，DOM 一换就回到默认的收起，
+  // 而用户此刻正盯着展开的那份看。**只带当前这一屏**——下次打开这篇仍是收起的，
+  // 那条定稿说的「收起状态不记忆」管的是跨次打开，不是这一次内部重画。
+  const fmOpen = document.querySelector('.fm-fold')?.open === true;
   render();
+  if (fmOpen) {
+    const fold = document.querySelector('.fm-fold');
+    if (fold) fold.open = true;
+  }
   window.scrollTo(0, y);
 }
 

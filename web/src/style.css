@@ -174,6 +174,36 @@ a { color: inherit; text-decoration: none; }
 /* 已勾项的划线不能横穿标签——那是标签，不是被划掉的内容 */
 .md li.task-done .task-text .tag-chip { text-decoration: none; }
 
+/* ---------- 开头那段声明（#12 定稿 → #30） ---------- */
+/* 位置：正文上方一块独立区域，**随正文一起滚**，不钉顶（钉顶会把阅读区压掉一截）。
+   形态：字段排成一行一行的「键 —— 值」。超过 3 项才折起来，折的是原生 <details>，
+   前缀那条横线（默认的三角）藏掉，换成整行都可点。 */
+.md .fm {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: #fbfaf6;
+  /* 字号**不动**：正文是 16px，声明区跟着它，里面的标签胶囊才与正文里的 `#标签`
+     逐像素同尺寸。想让它更像「元信息」就靠底色、边框、行高与灰色的键，别靠字号——
+     一改字号，那颗胶囊立刻和正文里的不是同一个东西了。 */
+  line-height: 1.6;
+}
+.md .fm-rows { display: flex; flex-direction: column; gap: 2px; }
+.md .fm-row { display: flex; gap: 10px; align-items: baseline; }
+/* 键不换行、也不许被值挤没；值那一列吃掉剩下的宽度，长了就整段铺开（不截断） */
+.md .fm-key { flex: 0 0 auto; max-width: 42%; color: var(--muted); }
+.md .fm-vals { flex: 1; min-width: 0; }
+.md .fm-v { white-space: pre-wrap; word-break: break-word; }
+/* 折叠：`summary` 就是「声明 · N 项」那一行，收起时它是唯一看得见的东西 */
+.md .fm-fold > summary.fm-summary {
+  list-style: none; cursor: pointer;
+  color: var(--muted); font-size: 14px;
+}
+.md .fm-fold > summary.fm-summary::-webkit-details-marker { display: none; }
+.md .fm-fold > summary.fm-summary::after { content: ' ⌄'; }
+.md .fm-fold[open] > summary.fm-summary::after { content: ' ⌃'; }
+.md .fm-fold[open] > summary.fm-summary { margin-bottom: 6px; }
+
 .editor {
   width: 100%; min-height: 60vh;
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
