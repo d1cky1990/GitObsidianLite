@@ -475,22 +475,24 @@ function bodyNotReadyText() {
 // 每次改词给一个序号：先发的请求回来晚了，就别拿旧结果盖新的那一次
 let searchSeq = 0;
 
-function wireSearch() {
+/**
+ * 搜索框的接线。**光标位置由调用方在重画之前读好传进来**（`{focused, caret}`）——
+ * 不能用一个「要不要聚焦」的标志位记它：整页重画时旧输入框被移出文档，浏览器会在
+ * **新的那个已经聚焦之后**才补派一个 `blur`，那个迟到的 blur 会把标志位抹掉，
+ * 于是紧随其后的第二次重画就不再把焦点放回去（踩过：打第一个字母就丢输入状态，
+ * 因为改词要重画两次——先画结果，等网络那头确认完再画一次）。
+ */
+function wireSearch({ focused = false, caret = 0 } = {}) {
   const inp = document.getElementById('q');
-  if (!inp) { state.searchFocus = false; return; }
+  if (!inp) return;
   inp.addEventListener('input', () => {
     state.query = inp.value;
-    state.searchFocus = true;
     onQueryChanged();
   });
-  inp.addEventListener('focus', () => { state.searchFocus = true; });
-  inp.addEventListener('blur', () => { state.searchFocus = false; });
-  // 整页重画会把输入框换掉，所以光标要自己放回去（同 wireDialog 的做法）
-  if (state.searchFocus) {
-    inp.focus();
-    const n = inp.value.length;
-    try { inp.setSelectionRange(n, n); } catch (e) { /* 忽略 */ }
-  }
+  if (!focused) return;
+  inp.focus();
+  const n = Math.max(0, Math.min(caret, inp.value.length));
+  try { inp.setSelectionRange(n, n); } catch (e) { /* 忽略 */ }
 }
 
 /**
@@ -773,7 +775,6 @@ const state = {
 
   // ---- 搜索与设置（#33） ----
   query: '', // 搜索框里的词（空 = 正常翻目录）
-  searchFocus: false, // 重渲染之后要不要把光标放回搜索框
   online: null, // null = 还没问过；true / false = 那次很轻的版本身份请求的结果
   settingsFrom: '', // 进设置页之前所在的目录，「返回」回到那里
   bodyCount: 0, // 本地正文副本已有几篇
@@ -990,6 +991,10 @@ function renderList() {
   // 搜索框常驻在这一页顶部（#16 定的入口）。有词的时候正文区换成结果——
   // 面包屑此时收起来：结果的上下文是「哪几篇」，不是「现在站在哪个目录」。
   const searching = !!normalizeQuery(state.query);
+  // 重画会把这个输入框换成新的，所以**先**把它的焦点与光标位置读下来（见 wireSearch）
+  const qEl = document.getElementById('q');
+  const hadFocus = !!qEl && document.activeElement === qEl;
+  const caret = hadFocus ? qEl.selectionStart : 0;
 
   app.innerHTML =
     '<header class="bar">' + renderSearchBar() +
@@ -1006,7 +1011,7 @@ function renderList() {
     renderToast();
   applyFab();
   wireDialog();
-  wireSearch();
+  wireSearch({ focused: hadFocus, caret });
 }
 
 /* ---------- 文件操作的浮层：操作表 / 弹窗 / 目录选择器 ---------- */
