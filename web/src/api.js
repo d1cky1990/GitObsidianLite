@@ -58,3 +58,15 @@ export const deleteFile = (path, sha, message) =>
   });
 
 export const rawUrl = (path) => `/api/raw?path=${encodeURIComponent(path)}`;
+
+// 批量取正文（搜索的本地副本用，#33）。传的是**指纹**（[{path, sha}]），不是路径——
+// 上游认的就是 sha。服务端会保证「输出顺序与请求一致」，且单条失败不影响整批
+// （失败的落在 `failed` 里）。
+//
+// 一次别贪多：分批是给断点续传留的粒度，取到一篇就存一篇，关页面最多丢最后这一批。
+export const fetchBlobs = (files) =>
+  api('/api/blobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files }),
+  });

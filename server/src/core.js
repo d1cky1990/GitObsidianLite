@@ -185,6 +185,84 @@ async function writeFailure(e, env, p) {
   return json({ error: messageOf(e.body) || e.message }, e.status || 500);
 }
 
+/* ---------- 批量取正文（搜索用，#33） ---------- */
+
+// 一批最多几篇。这不是「省请求数」的调优——分批是留给手机端断点续传的粒度
+// （取到一篇存一篇，关页面最多损失还没到手的那几篇）。超过就报错，别让一次请求
+// 变成无上限的活。
+const MAX_BLOB_BATCH = 50;
+
+// 上游并发。8 是 #16 实测过的档（8 并发取 100 篇 24 秒，零失败、零限流）。
+const BLOB_CONCURRENCY = 8;
+
+// 上游偶尔不回 JSON：被 WAF 拦下时回的是一整页 HTML（实测 2026-10-02，见下面 fetchBlobs 的注释）。
+// 把整页 HTML 当成错误信息抛给界面，等于把一坨标签糊在用户脸上；这里只留一句能读的。
+function upstreamErrorText(status, body) {
+  if (typeof body === 'string' && /^\s*</.test(body)) {
+    return `上游回了 ${status}，且不是接口的错误体（整页 HTML，看着像被安全策略拦了）`;
+  }
+  return messageOf(body) || `上游回了 ${status}`;
+}
+
+/**
+ * 按指纹批量取正文。上游走 `git/blobs`（一次一个 blob，按 sha 取）。
+ *
+ * **单条失败只报单条**：整批不能因为一篇被别处删了、或一个 sha 拼错了就全废——
+ * 那样手机端每次重试都会在同一条上再摔一次，永远备不完。失败的按原样回给调用方，
+ * 由它决定怎么办（跳过、重试、还是让用户知道）。
+ *
+ * **⚠️ 上游会限流，而且是分不出状态码的那种**：2026-10-02 拿本机对真仓库实测，
+ * 连续取到第 600 多篇时开始回 **403 + 百度云 WAF 的拦截页**，之后连 `/api/head`
+ * 都一起被拦（同一个出口 IP）。也就是说「全库拉一遍」这件事**不能一波猛冲**，
+ * 客户端得自己控速、并在撞墙时停下来。`BLOB_CONCURRENCY` 只管一批内的并发，
+ * 批与批之间的节奏在客户端（见 `web/src/note-sync.js` 的 `batchGapMs`）。
+ *
+ * @param {{GITEE_OWNER:string, GITEE_REPO:string}} env
+ * @param {{path:string, sha:string}[]} files
+ * @returns {Promise<{blobs:{path:string,sha:string,content:string}[], failed:{path:string,sha:string,error:string}[]}>}
+ */
+async function fetchBlobs(env, files) {
+  const out = new Array(files.length);   // 按下标回填，输出顺序与请求一致
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < files.length) {
+      const i = cursor++;
+      const f = files[i];
+      const p = f && f.path, sha = f && f.sha;
+      if (!p || !sha) { out[i] = { ok: false, path: p || '', sha: sha || '', error: '缺少 path 或 sha' }; continue; }
+      try {
+        const d = await gitee(
+          env,
+          `/repos/${env.GITEE_OWNER}/${env.GITEE_REPO}/git/blobs/${encodeURIComponent(sha)}`
+        );
+        if (!d || typeof d.content !== 'string') {
+          out[i] = { ok: false, path: p, sha, error: '上游没有返回内容' };
+          continue;
+        }
+        // Gitee 的 blobs 回 base64（实测 encoding 就是 "base64"，且内容里不带换行）。
+        // 换行还是照删一遍：那是 base64 解出来会崩、而错误信息完全指不到病因的一类输入。
+        const content = d.encoding === 'utf-8'
+          ? d.content
+          : base64ToUtf8(d.content.replace(/\s+/g, ''));
+        out[i] = { ok: true, path: p, sha: d.sha || sha, content };
+      } catch (e) {
+        if (!(e instanceof GiteeError)) throw e;
+        // 文件被删了（sha 查不到）回 404 `Blob not found`——这条要如实说，别吞成空内容
+        out[i] = { ok: false, path: p, sha, error: upstreamErrorText(e.status, e.body) };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BLOB_CONCURRENCY, files.length) }, worker));
+
+  const blobs = [], failed = [];
+  for (const r of out) {
+    if (!r) failed.push({ path: '', sha: '', error: '未取到' });
+    else if (r.ok) blobs.push({ path: r.path, sha: r.sha, content: r.content });
+    else failed.push({ path: r.path, sha: r.sha, error: r.error });
+  }
+  return { blobs, failed };
+}
+
 /* ---------- 路由 ---------- */
 
 async function routeApi(request, env, url) {
@@ -261,6 +339,17 @@ async function routeApi(request, env, url) {
       }
       return json({ error: messageOf(e.body) || e.message }, e.status || 500);
     }
+  }
+
+  // 批量取正文（搜索的本地副本，见 #33）。按指纹取，不按路径——上游 git/blobs 认的就是 sha
+  if (path === '/api/blobs' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const files = body && body.files;
+    if (!Array.isArray(files) || !files.length) return json({ error: '缺少 files 数组' }, 400);
+    if (files.length > MAX_BLOB_BATCH) {
+      return json({ error: `一次最多 ${MAX_BLOB_BATCH} 篇，多的分几批` }, 400);
+    }
+    return json(await fetchBlobs(env, files));
   }
 
   // 图片 / 附件 raw（代理转发）

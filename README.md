@@ -33,7 +33,7 @@ cd web && npm test                     # 前端：双链 / 引用解析等纯函
 node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则
 ```
 
-两边都是 `node --test`，没有额外测试框架。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
+两边都是 `node --test`，没有额外测试框架。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`、`web/src/note-sync.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
 
 单测盯的是纯函数；**一张票交付前还要在真语料上跑一遍**：从归档解出全库路径清单与每篇正文，`import` 被测模块**本身**整体渲染一遍，用改完的真实代码路径数结果。不要另写一份复刻被测逻辑的复算脚本——两边会一起错，而且错得看不出来。
 
@@ -54,6 +54,7 @@ node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则
 - **拿真库当真数据量一遍时，先确认尺子和被测的东西在同一层**：`#29` 量标签时，用正则在原文上数出的条数比渲染后数出来的多一倍，多出来的全是 `### 标题` 这类被当成了标签的噪音。**import 被测模块本身、整体跑一遍再数**，两个口径对不上就一直查到对上为止——对不上的那部分往往正是规则该干的活。
 - **量「收起来的 `<details>` 里那几行看不见」，别用 `getBoundingClientRect()`**：收起是靠 `::details-content { content-visibility: hidden }` 实现的，那几行**布局盒还在**（`#30` 实测 `offsetHeight` 26、rect 高 25.6），拿尺寸量会得出「明明收着却全都看得见」。用 `el.checkVisibility()`（它把 `content-visibility` 算进去）+ 折叠块自身的高度。
 - **比「新旧两套渲染管线输出是否一致」时，比法本身也得同层**：`#30` 第一版拿「删掉声明块后的正文」去和「原文渲染结果」比，全线不一致——不是功能坏了，是删掉的那几行让**源文绝对行号**整体前移，而勾选框的 `data-task-line` 记的正是绝对行号。正确比法是**把那段原地挖空、行数不动**再渲染一遍。
+- **单测「import 被测模块本身跑一遍」不等于应用里也这么接线**：`#8` 的图片规则要一个 `isIndexPending()`，而它读的是 `main.js` 里一个模块级变量；单测里传的是写死的 `false`，于是全都过，应用里那个变量却一直非空——**每一张库内图片都被摆成「正在确认位置」的中性占位，永远换不成真图**。`#33` 在真浏览器里打开一篇带图的笔记才看见。教训：跨模块的**接线**（谁读谁、什么时候清）没有单测可依赖，验它就得真跑一遍。
 
 ## 提交前凭据检查
 
@@ -124,6 +125,7 @@ node --test "scripts/**/*.test.mjs"
 | GET | `/api/file?path=` | 读文件（utf8） |
 | PUT | `/api/file` | 写文件（body: path/message/content/sha）。**带 sha 是改，不带是建** |
 | DELETE | `/api/file` | 删文件（body: path/sha/message） |
+| POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤50）。单条失败只报单条 |
 | GET | `/api/raw?path=` | 图片 / 附件 raw |
 
 `server/src/core.js` 是这一面的唯一出处；改接口先看它。
