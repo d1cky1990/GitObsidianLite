@@ -458,3 +458,11 @@ button.wide {
 }
 button.wide:active { background: #f0efe9; }
 button.wide.danger { color: #c0392b; border-color: #e7c3c0; }
+
+/* `hidden` 要真能藏住：上面好几处（面包屑、清空按钮、新建按钮）带自己的 display，
+   作者样式会盖掉浏览器默认的 `[hidden] { display: none }`，所以这一条得带 !important。 */
+[hidden] { display: none !important; }
+
+/* `hidden` 要真能藏住：上面好几处（面包屑、清空按钮、新建按钮）带自己的 display，
+   作者样式会盖掉浏览器默认的 `[hidden] { display: none }`，所以这一条得带 !important。 */
+[hidden] { display: none !important; }

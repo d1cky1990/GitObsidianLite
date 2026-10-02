@@ -403,15 +403,6 @@ function searchState() {
   };
 }
 
-function renderSearchBar() {
-  return '<div class="search-row">' +
-    '<input id="q" class="search-input" type="text" placeholder="搜索笔记" value="' + esc(state.query) + '"' +
-    ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
-    (state.query ? '<button class="search-clear" data-act="clearQuery" aria-label="清空搜索">×</button>' : '') +
-    '<button class="gear" data-act="openSettings">设置</button>' +
-    '</div>';
-}
-
 function resultRow(r) {
   return '<a class="res" href="#/edit/' + encodeURIComponent(r.path) + '"' +
     ' data-hit="' + esc(r.path) + '" data-hitq="' + esc(normalizeQuery(state.query)) + '">' +
@@ -475,24 +466,51 @@ function bodyNotReadyText() {
 // 每次改词给一个序号：先发的请求回来晚了，就别拿旧结果盖新的那一次
 let searchSeq = 0;
 
-/**
- * 搜索框的接线。**光标位置由调用方在重画之前读好传进来**（`{focused, caret}`）——
- * 不能用一个「要不要聚焦」的标志位记它：整页重画时旧输入框被移出文档，浏览器会在
- * **新的那个已经聚焦之后**才补派一个 `blur`，那个迟到的 blur 会把标志位抹掉，
- * 于是紧随其后的第二次重画就不再把焦点放回去（踩过：打第一个字母就丢输入状态，
- * 因为改词要重画两次——先画结果，等网络那头确认完再画一次）。
- */
-function wireSearch({ focused = false, caret = 0 } = {}) {
+/* ---------- 列表页的骨架 ---------- */
+//
+// **搜索框只建一次，之后再也不换掉它。** 这条不是讲究，是能不能打中文的前提：
+// 整页重画会把 <input> 换成一个新节点，而中文输入法正在组字时，节点一换组字就断了
+// （真输入法通路实测：框被换成新的、组字再也不会结束、接着敲的字母全糊在一起）。
+// 所以列表页拆成骨架 + 内容区，重画只改内容区。
+//
+// 光标丢不丢只是它的一个后果，根子是**节点不能换**。
+
+function listShellHtml() {
+  return '<header class="bar">' +
+    '<div class="search-row">' +
+    '<input id="q" class="search-input" type="text" placeholder="搜索笔记"' +
+    ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
+    '<button class="search-clear" id="q-clear" data-act="clearQuery" aria-label="清空搜索">×</button>' +
+    '<button class="gear" data-act="openSettings">设置</button>' +
+    '</div>' +
+    '<span class="crumbs" id="list-crumbs"></span>' +
+    '</header>' +
+    '<main class="list" id="list-main"></main>' +
+    '<button class="fab" id="fab-new" data-act="newFile">＋ 新建笔记</button>' +
+    '<div id="list-overlays"></div>' +
+    '<div id="list-toast"></div>';
+}
+
+/** 输入法正在组字。组字期间：不重画、不搜、更不碰那个框里的值。 */
+let searchComposing = false;
+
+function wireSearch() {
   const inp = document.getElementById('q');
   if (!inp) return;
-  inp.addEventListener('input', () => {
+  inp.addEventListener('compositionstart', () => { searchComposing = true; });
+  inp.addEventListener('compositionend', () => {
+    searchComposing = false;
+    // 拼完了才搜——搜的该是拼出来的词，不是中间那串字母
+    if (inp.value === state.query) return;
     state.query = inp.value;
     onQueryChanged();
   });
-  if (!focused) return;
-  inp.focus();
-  const n = Math.max(0, Math.min(caret, inp.value.length));
-  try { inp.setSelectionRange(n, n); } catch (e) { /* 忽略 */ }
+  inp.addEventListener('input', (e) => {
+    if (e.isComposing || searchComposing) return;  // 组字中：等它结束
+    if (inp.value === state.query) return;         // 提交组字那一下会再补一个 input
+    state.query = inp.value;
+    onQueryChanged();
+  });
 }
 
 /**
@@ -991,27 +1009,34 @@ function renderList() {
   // 搜索框常驻在这一页顶部（#16 定的入口）。有词的时候正文区换成结果——
   // 面包屑此时收起来：结果的上下文是「哪几篇」，不是「现在站在哪个目录」。
   const searching = !!normalizeQuery(state.query);
-  // 重画会把这个输入框换成新的，所以**先**把它的焦点与光标位置读下来（见 wireSearch）
-  const qEl = document.getElementById('q');
-  const hadFocus = !!qEl && document.activeElement === qEl;
-  const caret = hadFocus ? qEl.selectionStart : 0;
 
-  app.innerHTML =
-    '<header class="bar">' + renderSearchBar() +
-    (searching ? '' : '<span class="crumbs">' + crumbs(state.path) + '</span>') + '</header>' +
-    '<main class="list">' +
-    (searching
-      ? renderResults()
-      : (state.busy ? '<div class="center">加载中…</div>' : (items || '<div class="center dim">（空目录）</div>'))) +
-    '</main>' +
-    // 新建只在目录页出现（笔记页没有它），搜索时也收起来——它跟结果无关。
-    // 显隐由滚动方向决定，见 onScroll。
-    (searching ? '' : '<button class="fab" id="fab-new" data-act="newFile">＋ 新建笔记</button>') +
-    renderOverlays() +
-    renderToast();
+  // 骨架只建一次；之后每次重画只换内容区（见上面那段注释：搜索框那个节点不能换）
+  if (!document.getElementById('list-main')) {
+    app.innerHTML = listShellHtml();
+    wireSearch();
+  }
+
+  const inp = document.getElementById('q');
+  // 组字中绝不碰它的值——那会把输入法正在拼的东西抹掉
+  if (!searchComposing && inp.value !== state.query) inp.value = state.query;
+  document.getElementById('q-clear').hidden = !state.query;
+
+  const crumbsEl = document.getElementById('list-crumbs');
+  crumbsEl.innerHTML = crumbs(state.path);
+  crumbsEl.hidden = searching;
+
+  document.getElementById('list-main').innerHTML = searching
+    ? renderResults()
+    : (state.busy ? '<div class="center">加载中…</div>' : (items || '<div class="center dim">（空目录）</div>'));
+
+  // 新建只在目录页出现（笔记页没有它），搜索时也收起来——它跟结果无关。
+  // 显隐由滚动方向决定，见 onScroll。
+  document.getElementById('fab-new').hidden = searching;
+  document.getElementById('list-overlays').innerHTML = renderOverlays();
+  document.getElementById('list-toast').innerHTML = renderToast();
+
   applyFab();
   wireDialog();
-  wireSearch({ focused: hadFocus, caret });
 }
 
 /* ---------- 文件操作的浮层：操作表 / 弹窗 / 目录选择器 ---------- */
