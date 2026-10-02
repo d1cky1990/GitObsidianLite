@@ -429,11 +429,13 @@ function renderResults() {
     : '<div class="res-empty dim">' + (s.indexReady ? '标题和路径里都没有' : '文件名单还在加载…') + '</div>';
   html += '</div>';
 
+  // 开关没开就**不出现正文那一栏**：一栏永远写着「去设置里打开」只是白占屏幕。
+  // 想开的人会在设置里看到那个开关（那里才是它的说明该待的地方）。
+  if (!prefs.body) return html;
+
   html += '<div class="res-group"><div class="res-head">正文' +
     (s.bodyReady && s.bodyLoaded ? '<span class="res-n">' + s.bodies.length + '</span>' : '') + '</div>';
-  if (!prefs.body) {
-    html += '<div class="res-note dim">只搜了标题和路径。想连正文一起搜，去右上角「设置」里把搜正文打开。</div>';
-  } else if (!s.bodyReady) {
+  if (!s.bodyReady) {
     // 未就绪时**整组不出结果**，只留一句说明（#32 §5 定的，比 #33 票面那句更严）
     html += '<div class="res-note dim">' + bodyNotReadyText() + '</div>';
   } else if (!s.bodyLoaded) {
