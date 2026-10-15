@@ -42,4 +42,4 @@ issue 与 spec 都存放在 `d1cky1990/GitObsidianLite` 的 GitHub Issues 里，
 
 ### Domain docs
 
-单一 context —— 仓库根的 `CONTEXT.md` 与 `docs/adr/`，由 `/domain-modeling` 惰性创建。见 `docs/agents/domain.md`。
+单一 context —— 仓库根的 `GLOSSARY.md` 与 `docs/adr/`，由 `/domain-modeling` 惰性创建。见 `docs/agents/domain.md`。
