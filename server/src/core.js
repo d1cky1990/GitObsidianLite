@@ -1,5 +1,5 @@
 // Obsidian 移动端同步 · 核心 API 逻辑（平台无关）
-// 被 server/src/index.js（Cloudflare Workers）与 deploy/main.ts（Deno Deploy）共用。
+// 由唯一的入口 server/src/index.js（Cloudflare Workers）调用；本文件不认识任何平台 API。
 // 代理 Gitee API v5，藏 token、解 CORS、做 UTF-8 编解码；可选简单密码鉴权（APP_PASSWORD）。
 
 const BASE = 'https://gitee.com/api/v5';
@@ -199,7 +199,7 @@ async function writeFailure(e, env, p) {
 const MAX_BLOB_BATCH = 20;
 
 // 上游并发。**6 是平台上限，不是调优**：Workers 规定「一次调用同时最多 6 条连接」，
-// 第 7 条开始排队（排队不报错，只是白等）。旧值 8 是 #16 在 Deno 上实测的档
+// 第 7 条开始排队（排队不报错，只是白等）。旧值 8 是 #16 在迁移前那个平台上实测的档
 // （8 并发取 100 篇 24 秒，零失败、零限流），那份成绩单在 Workers 上不成立。
 const BLOB_CONCURRENCY = 6;
 

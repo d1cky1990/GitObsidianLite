@@ -9,9 +9,9 @@ compatibility_date = "2024-11-01"
 # 本地开发放到 .dev.vars（参考 .dev.vars.example），线上用 wrangler secret 配置。
 #
 # 这四项（含 APP_PASSWORD）都由 handler 第二个参数 `env` 直接给：`wrangler dev` 从
-# `.dev.vars` 读、线上从平台变量读，名字就是 `env.GITEE_TOKEN` 这种。别把 Deno 入口
-# 那套 `Deno.env.get` 带过来，也别在入口里包一层同名函数叫 `env()`——名字一样不代表
-# 同一件事，而那种「看起来还叫 env」的写法会让下一处排错查到完全不同的地方。
+# `.dev.vars` 读、线上从平台变量读，名字就是 `env.GITEE_TOKEN` 这种。别在入口里自己
+# 读一遍环境、再包一层同名函数叫 `env()`——名字一样不代表同一件事，而那种「看起来
+# 还叫 env」的写法会让下一处排错查到完全不同的地方。
 [vars]
 GITEE_OWNER = ""
 GITEE_REPO = ""
@@ -26,8 +26,8 @@ GITEE_REPO = ""
 # **别往 `web/public/` 里放任何叫 `api` 的东西**——放了接口就被静态资源挡在门外，
 # 而且是以 404 页面的形式出现，错误信息里一个字都不会提到路由。
 #
-# 缓存头：**没有照抄 Deno 入口那份手写注释**（index.html 不缓存、带 hash 的产物缓存
-# 一天）。实测这个绑定的默认行为是 `Cache-Control: public, max-age=0, must-revalidate`
+# 缓存头：**没有自己手写**（例如 index.html 不缓存、带 hash 的产物缓存一天）。
+# 实测这个绑定的默认行为是 `Cache-Control: public, max-age=0, must-revalidate`
 # ＋每个文件一个 `ETag`，带 `If-None-Match` 再来一次回 304。也就是说：发版立刻生效
 # （index.html 每次都要跟服务器核对一遍），没变的产物也只花一次条件请求、不重下。
 # 这正是想要的，所以不另加 `_headers` 去覆盖它。

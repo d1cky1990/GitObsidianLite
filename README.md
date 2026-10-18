@@ -8,8 +8,8 @@
 - `server/src/index.js` — Cloudflare Workers 入口：`/api/*` 交给 core，其余交给静态资源（**线上与本地都走它**）
 - `server/wrangler.toml` — Worker 配置：入口、静态资源目录（`web/dist`）、两个普通变量
 - `web/` — 前端（Vite + 原生 JS + markdown-it）
-- `deploy/main.ts` — 旧的 Deno Deploy 入口（平台约 2027-04 关停，留作参考，**不再是部署路径**）；`deno.json` 是它的配置
 - `scripts/` — 仓库工具：一条命令的部署（`deploy.mjs`）、提交前凭据检查、hook 安装
+- `docs/guide/` — 要你本人点网页的那几步（注册账号、生成令牌）；截图位置已留好，图待补
 - `.githooks/pre-commit` — 凭据检查的挂载点（见「提交前凭据检查」）
 
 ## 本地运行
@@ -23,7 +23,7 @@
 
 浏览器打开 `http://localhost:5173`（或第 4 步的 `http://localhost:8787`）即可。
 
-> Windows 上 8000 附近可能落在 Hyper-V 的保留端口段里，起不来就用 `netsh int ipv4 show excludedportrange protocol=tcp` 查一下，换一个端口。
+> 后端默认端口是 8787（`wrangler dev`）。Windows 上起不来说「端口被占用」，先用 `netsh int ipv4 show excludedportrange protocol=tcp` 看一眼是不是落在系统保留段里，再换一个：`cd server && npx wrangler dev --port 8790`。
 
 ## 测试
 
@@ -104,9 +104,11 @@ node scripts/deploy.mjs
    setx CLOUDFLARE_API_TOKEN "..."
    ```
 
-   在 cmd 里跑，然后**重开终端**。用 cmd 而不是 PowerShell：后者会把命令记进历史文件，令牌跟着落盘。令牌在控制台的 My Profile → API Tokens 建，模板选 "Edit Cloudflare Workers"。
+   在 cmd 里跑，然后**重开终端**。用 cmd 而不是 PowerShell：后者会把命令记进历史文件，令牌跟着落盘。
 
-   **要用「用户级」令牌**（头像 → My Profile 那一页）。账号页里的 Account API Tokens、以及对象存储（R2）那边生成的令牌都属于「账号级」，wrangler 认不出该往哪个账号部署——真撞上了它会自己说怎么办。
+   这个令牌**必须是「用户级」的**：账号页的 Account API Tokens、以及对象存储（R2）那边生成的都属于「账号级」，wrangler 认不出该往哪个账号部署。在哪生成、模板选哪个，见指引；撞上了看下面「已知的坑」第一条。
+
+这两件事都要你**本人登录后点网页**，截图与逐步说明在 [`docs/guide/manual-steps.md`](docs/guide/manual-steps.md)。本节只写本机要做什么。
 
 **配置只有一处**：`server/.dev.vars`（从 `.dev.vars.example` 复制）。三项必填——`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`，加一个可选的 `APP_PASSWORD`。本地开发和部署读的是同一份，脚本**只挑这几项**推上去，文件里多出来的键一律不推。
 
@@ -129,8 +131,6 @@ node scripts/deploy.mjs
 
 **幂等**：Workers 没有「建应用」这一步，`wrangler deploy` 第一次跑就把 Worker 建出来。紧接着再跑一次只是重新构建、重新上传，机密已存在就改值。
 
-**还差一个名字的情况**：新账号没注册过 `workers.dev` 子域（每个账号只注册一次），脚本会停下来告诉你加 `--subdomain 你的名字` 重跑。这个名字就是网址里的那一段，全球唯一，只能你自己选。
-
 ### 失败怎么读
 
 两种话，对应两种动作：
@@ -139,6 +139,18 @@ node scripts/deploy.mjs
 - **说不清的**（网络 / 对方临时出错）→ 「这项没测出来，多半是网络，重跑一次」。
 
 **没有强行部署的开关。** 这条命令包的只是几步标准步骤、不是黑盒：它每一步都以 `▸ n/6 …` 打出来，背后就是 `wrangler`（装在 `server/` 里，部署由 `wrangler deploy` 完成）。检查本身有毛病时，人看得到卡在哪一步。
+
+### 已知的坑
+
+一处一条，写的都是**撞上时看到的样子**——这些是 2026-10 搬到 Workers 时真撞出来的，而症状和原因通常对不上号。
+
+- **`Authentication failed (status: 400) [code: 9106]`，打头就是 `/memberships`** → 用的是**账号级**令牌（账号页的 Account API Tokens、R2 那边生成的都算）。wrangler 部署前要先问「这个令牌属于哪个账号」，账号级令牌答不上这个问题。换成用户级令牌——生成路径见[指引](docs/guide/manual-steps.md)第 2 节，或者把账号 ID 也设上。**它不是「令牌不对」**——同一个令牌可能调别的接口是好的。
+- **代码确实传上去了，却一个网址都没给** → 这个账号还没注册过 `workers.dev` 子域（每个账号只注册一次）。脚本会停下来让你加 `--subdomain 你的名字` 重跑，因为这个名字会进网址、全球唯一，只能你自己选。**别把这一步当成「部署失败」**。
+- **`wrangler` 一启动就报找不到 `../web/dist`** → 静态资源目录还没有内容。先 `cd web && npm run build`；走部署脚本的话第 4 步会替你构建。
+- **页面打得开，所有接口却都是 404，报错里一个字都不提路由** → `web/dist` 里出现了一个叫 `api` 的东西（多半是有人往 `web/public/` 放了同名文件，Vite 会原样复制过去）。静态资源优先匹配，`/api/*` 就被挡在门外。机制写在 `server/wrangler.toml` 的 `[assets]` 注释里，`server/src/index.test.mjs` 有一条测试守着。
+- **把批大小调大之后，整趟同步每批都 400、一篇都取不到** → 服务端一批上限 20、上游并发 6，这两个数是平台免费档的「单次调用最多 50 个外发请求、同时最多 6 条连接」倒推出来的，不是调优值。原因写在 `server/src/core.js` 那两个常量上方。
+- **电脑上正常，手机上打不开** → 这不是配置没调好，而是地址本身的脾气，见下面「自行部署须知」的「访问方式」。
+- **第一次打开带图的笔记，像卡住了十几秒** → 冷启动要先拉全库名单、再逐张取图；同一篇再开是秒开。慢不构成故障（那条判据已撤销），数字记在 [#41](https://github.com/d1cky1990/GitObsidianLite/issues/41)。
 
 ### 仓库还没建？
 
@@ -180,7 +192,7 @@ node scripts/deploy.mjs --dry-run
 | GET | `/api/file?path=` | 读文件（utf8） |
 | PUT | `/api/file` | 写文件（body: path/message/content/sha）。**带 sha 是改，不带是建** |
 | DELETE | `/api/file` | 删文件（body: path/sha/message） |
-| POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤50）。单条失败只报单条 |
+| POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤20）。单条失败只报单条 |
 | GET | `/api/raw?path=` | 图片 / 附件 raw |
 
 `server/src/core.js` 是这一面的唯一出处；改接口先看它。
@@ -205,7 +217,7 @@ node scripts/deploy.mjs --dry-run
 前置条件：
 - 一个 Gitee 账号 + 一个存放笔记的仓库（公开私有都行，令牌需 `projects` 权限）
 - 一台能跑 Node 22 的机器（构建前端、跑那条部署命令都要它）
-- 一个 Cloudflare 账号 + 一个 API 令牌（见「部署上线」）
+- 一个 Cloudflare 账号 + 一个 API 令牌（见「部署上线」与[图文指引](docs/guide/manual-steps.md)）
 - **访问方式**：`*.workers.dev` 在国内长期不稳，日常打开大概要挂着梯子。这是选这个平台时明确接受的代价（[#39](https://github.com/d1cky1990/GitObsidianLite/issues/39)），不是配置没调好
 
 ## 许可证

@@ -1,9 +1,0 @@
-{
-  "deploy": {
-    "org": "d1cky1990",
-    "app": "obsidian-lite",
-    "entrypoint": "deploy/main.ts",
-    "include": ["deploy", "server/src", "web/dist"]
-  }
-}
-

@@ -14,6 +14,7 @@
 | 考虑过并否决的选项 | `docs/design/obsidian-mobile-web/`（`map.md`、`issues/`、`research/`）—— **历史快照，只读** |
 | 已定下、不该重开的决定 | `docs/adr/` |
 | 怎么跑、怎么测、怎么部署，以及已知的坑 | `README.md` |
+| 必须由用户本人点网页的那几步（注册账号、生成令牌） | `docs/guide/manual-steps.md` |
 | 未完成的工作与进行中的决定 | GitHub Issues —— 见下文 |
 
 以下三条规则，比它们看上去的要紧：

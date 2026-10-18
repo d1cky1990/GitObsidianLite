@@ -152,7 +152,9 @@ export function isSecretKeyName(name) {
 
 /** 值是「引用」而不是「字面量」：读环境变量、属性访问、模板拼接 */
 function isReference(value) {
-  return /\$\{|\benv\.|process\.env|Deno\.env|import\.meta|=>/.test(value);
+  // 认的是「这段值是代码」的形状，不针对某一家的运行时——`\benv\.` 同时罩住
+  // `process.env` 这类写法，不需要逐家列。
+  return /\$\{|\benv\.|import\.meta|=>/.test(value);
 }
 
 /**

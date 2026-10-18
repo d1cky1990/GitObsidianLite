@@ -1,5 +1,5 @@
 // Cloudflare Workers 入口：**一个端口同时伺服前端与 API**（#40）。
-// 业务逻辑全部在 core.js，与 Deno Deploy 入口（deploy/main.ts）共用。
+// 业务逻辑全部在 core.js（唯一实现），这里不装业务，只做分工。
 //
 // 这里只负责分工：`/api` 与 `/api/*` 进 core，其余交给静态资源绑定 `env.ASSETS`
 // （`web/dist`）。**请求谁先谁后、以及为什么必须守着「dist 里不能有 api 路径」，
