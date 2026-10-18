@@ -106,6 +106,8 @@ node scripts/deploy.mjs
 
    在 cmd 里跑，然后**重开终端**。用 cmd 而不是 PowerShell：后者会把命令记进历史文件，令牌跟着落盘。令牌在控制台的 My Profile → API Tokens 建，模板选 "Edit Cloudflare Workers"。
 
+   **要用「用户级」令牌**（头像 → My Profile 那一页）。账号页里的 Account API Tokens、以及对象存储（R2）那边生成的令牌都属于「账号级」，wrangler 认不出该往哪个账号部署——真撞上了它会自己说怎么办。
+
 **配置只有一处**：`server/.dev.vars`（从 `.dev.vars.example` 复制）。三项必填——`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`，加一个可选的 `APP_PASSWORD`。本地开发和部署读的是同一份，脚本**只挑这几项**推上去，文件里多出来的键一律不推。
 
 **部署令牌不进这个文件**：它只在本机环境变量里。那份文件会被整份读进应用进程（`wrangler dev` 直接读它），把不属于应用的东西放进去，等于顺手交出去。

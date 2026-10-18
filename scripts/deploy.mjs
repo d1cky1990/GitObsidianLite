@@ -668,6 +668,7 @@ async function main(argv) {
     });
   }
   say(`   ${DEPLOY_TOKEN_ENV} 已设置（值不打印）`);
+  if (process.env.CLOUDFLARE_ACCOUNT_ID) say('   CLOUDFLARE_ACCOUNT_ID 也设了：部署到它指定的那个账号');
 
   /* 3 自检（本机 → gitee.com） ------------------------------------------ */
   step(3);
@@ -739,13 +740,13 @@ async function main(argv) {
   for (const key of plan.secrets) {
     // 值走 stdin——命令行参数会进进程列表和 shell 历史
     const r = await wranglerRun(['secret', 'put', key], { stdin: values[key] });
-    if (r.code !== 0) throw deploySideStop(r, `推 ${key} 没成`);
+    if (r.code !== 0) throw wranglerFailureStop(r, `推 ${key} 没成`);
     say(`   ${key}  ✓ 已推（加密，平台不会回读明文）`);
   }
   say(`   ${plan.vars.join(' / ')}  ✓ 跟着部署命令走，不落平台状态`);
 
   const deploy = await wranglerRun(['deploy', ...deployVarArgs(values)], { echo: true });
-  if (deploy.code !== 0) throw deploySideStop(deploy, '部署没成');
+  if (deploy.code !== 0) throw wranglerFailureStop(deploy, '部署没成');
 
   const url = parseWorkersUrl(`${deploy.out}\n${deploy.err}`);
   say('');
@@ -840,17 +841,47 @@ async function main(argv) {
 }
 
 /** 部署侧（wrangler）失败：按它报的话分三种最常见的卡点，认不出的就原样给最后几行 */
-function deploySideStop(r, headline) {
+/**
+ * 部署侧（wrangler）失败：认得出就点名，认不出就原样交回最后几行。
+ *
+ * 这里两次改判的依据都来自**真跑一次**（2026-10-18 用户首次部署撞出来的）：
+ * `Authentication failed (status: 400) [code: 9106]` 不是「令牌是假的」，而是
+ * **「账号级令牌」调不了用户级的 /memberships 端点**——wrangler 先要问「这个令牌
+ * 属于哪个账号」，问不到就一步也走不下去。两种令牌长得很像，但只有用户级的能回答
+ * 这个问题；账号级的必须**额外告诉它账号 ID**。把这两件事混成一句「令牌不对」，
+ * 人就会一直在同一个地方重建令牌。
+ */
+export function wranglerFailureStop(r, headline) {
   const text = `${r.err}\n${r.out}`;
   const tail = text.split(/\r?\n/).filter((l) => l.trim()).slice(-8);
-  if (/Authentication error|not authenticated|10000|Invalid API Token|Unauthorized/i.test(text)) {
+
+  // 这一条必须在「令牌不被认」之前，否则会被那句 Authentication failed 抢走
+  if (/\/memberships|9106/.test(text)) {
+    return new Stop({
+      step: 5,
+      headline: `${headline}：这个令牌是「账号级」的，wrangler 没法靠它确认该部署到哪个账号`,
+      detail: ['它去问 Cloudflare「我是谁、属于哪个账号」（/memberships），账号级令牌回答不了这个问题'],
+      hint: [
+        '最快的解法是把账号也指定上：setx CLOUDFLARE_ACCOUNT_ID "..."（那串在控制台 Workers 概览页右侧，就是建令牌那页上的 Account ID）',
+        '另一条路：换成「用户级」令牌——头像 → My Profile → API Tokens，模板 Edit Cloudflare Workers（不是 Manage Account 那一页）',
+        '两个都设好之后，重开终端再跑一次',
+      ],
+    });
+  }
+
+  if (/Authentication (?:error|failed)|not authenticated|10000|Invalid API Token|Unauthorized/i.test(text)) {
     return new Stop({
       step: 5,
       headline: `${headline}：Cloudflare 不认这个令牌`,
       detail: [`用的是 ${DEPLOY_TOKEN_ENV}`],
-      hint: ['重新建一个 API 令牌（模板 Edit Cloudflare Workers），用 setx 覆盖那个环境变量后重开终端'],
+      hint: [
+        '令牌可能建坏了或已被删：去控制台重建一个（模板 Edit Cloudflare Workers）',
+        '权限里要有 Workers Scripts : Edit，否则部署这一步一定被拒',
+        '用 setx 覆盖那个环境变量，然后重开终端',
+      ],
     });
   }
+
   if (/More than one account|multiple accounts/i.test(text)) {
     return new Stop({
       step: 5,
@@ -859,6 +890,7 @@ function deploySideStop(r, headline) {
       hint: ['setx CLOUDFLARE_ACCOUNT_ID "..."，然后重开终端'],
     });
   }
+
   if (/fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|socket hang up|502|503/i.test(text)) {
     return new Stop({
       step: 5,
@@ -867,6 +899,7 @@ function deploySideStop(r, headline) {
       hint: ['这项没测出来，多半是网络，重跑一次：node scripts/deploy.mjs'],
     });
   }
+
   return new Stop({
     step: 5,
     headline: headline,

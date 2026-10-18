@@ -21,6 +21,7 @@ import {
   parseWorkersUrl,
   giteeFailureMessage,
   classifyRuntime,
+  wranglerFailureStop,
   CONFIG_REL,
   SAMPLE_NOTE,
   SAMPLE_NOTE_PATH,
@@ -212,6 +213,59 @@ test('确认：访问密码对不上是单独一类', () => {
 test('确认：404 说明这个地址上不是应用本身，而不是「应用连不上仓库」', () => {
   const r = classifyRuntime({ status: 404, body: 'Not Found' });
   assert.equal(r.kind, 'unreachable');
+});
+
+/* ---------------- 部署侧失败（wrangler 自己报的） ---------------- */
+
+/** 真实输出，2026-10-18 用户首次部署时原样撞出来的 */
+const MEMBERSHIPS_FAILURE = {
+  code: 1,
+  out: '',
+  err: [
+    '✘ [ERROR] A request to the Cloudflare API (/memberships) failed.',
+    'Authentication failed (status: 400) [code: 9106]',
+    '⛅️ wrangler 3.114.17 (update available 4.151.1)',
+  ].join('\n'),
+};
+
+test('「账号级令牌」那句话必须是它自己的一句，不能混成「令牌不对」', () => {
+  // 这条是被真跑纠正过的：同一个 400，说成「令牌是假的」会让人不停重建令牌，
+  // 而真正缺的是「告诉 wrangler 用哪个账号」
+  const stop = wranglerFailureStop(MEMBERSHIPS_FAILURE, '推 GITEE_TOKEN 没成');
+  assert.match(stop.info.headline, /账号级/);
+  const hints = stop.info.hint.join(' ');
+  assert.match(hints, /CLOUDFLARE_ACCOUNT_ID/, '要给出最快的那条解法');
+  assert.match(hints, /My Profile/, '另一条路是换成用户级令牌');
+});
+
+test('令牌被拒：点名权限里要有 Workers Scripts : Edit', () => {
+  const stop = wranglerFailureStop(
+    { code: 1, out: '', err: 'Authentication error [code: 10000] Please ensure it has the correct permissions' },
+    '部署没成'
+  );
+  assert.match(stop.info.headline, /不认这个令牌/);
+  assert.match(stop.info.hint.join(' '), /Workers Scripts/);
+});
+
+test('多个账号：让它把账号 ID 设上', () => {
+  const stop = wranglerFailureStop({ code: 1, out: '', err: 'More than one account available' }, '部署没成');
+  assert.match(stop.info.headline, /多个账号/);
+  assert.match(stop.info.hint.join(' '), /CLOUDFLARE_ACCOUNT_ID/);
+});
+
+test('连不上：说重跑一次，不让人去改权限', () => {
+  const stop = wranglerFailureStop({ code: 1, out: '', err: 'fetch failed\nECONNREFUSED 104.16.0.1:443' }, '部署没成');
+  assert.match(stop.info.headline, /没连上 Cloudflare/);
+  assert.match(stop.info.hint.join(' '), /重跑一次/);
+});
+
+test('认不出的报错：原样留下最后几行，别自己编原因', () => {
+  const stop = wranglerFailureStop(
+    { code: 1, out: '', err: 'line1\nline2\nsomething odd happened' },
+    '部署没成'
+  );
+  assert.equal(stop.info.headline, '部署没成');
+  assert.ok(stop.info.detail.join(' ').includes('something odd happened'));
 });
 
 /* ---------------- 示例笔记 ---------------- */
