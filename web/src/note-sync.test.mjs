@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { noteShaMap, planSync, createBodySync } from './note-sync.js';
+import { noteShaMap, planSync, createBodySync, DEFAULT_BATCH_GAP_MS } from './note-sync.js';
 
 /* ---------- 假件：一个内存 store、一个记账的远端 ---------- */
 
@@ -319,4 +319,30 @@ test('consider：HEAD 变了，本地已齐也要重查一遍', async () => {
   });
   await sync.consider({ reused: false, noteCount: 2 });
   assert.equal(treeCalls, 1);
+});
+
+// 默认间隔**不是 0**。这条钉的是「默认值真的落到请求之间」——不是「那个数必须是 4000」：
+// 调大是安全的（首次多花几分钟），所以只对下界设防；调小之前得先去
+// `scripts/probe-upstream-rate.mjs` 拿新数字（#38，为什么不能随手调，写在
+// `note-sync.js` 的 DEFAULT_BATCH_GAP_MS 上）。
+//
+// 代价是真等一个间隔（4 秒）——这是唯一能证明「默认值真的生效」的办法，别改成读源码。
+test('默认批间隔：不传参数也得真垫上', async () => {
+  const at = [];
+  const sync = createBodySync({
+    store: fakeStore(),
+    loadTree: async () => ({ head: 'h1', tree: treeOf({ 'a.md': 's1', 'b.md': 's2' }) }),
+    fetchBlobs: async (files) => {
+      at.push(Date.now());
+      return { blobs: files.map((f) => ({ ...f, content: 'x' })), failed: [] };
+    },
+    getCapBytes: () => 1e9,
+    batchSize: 1,   // 两批，中间正好一个默认间隔
+    // 注意：**不传 batchGapMs**，测的就是默认值
+  });
+  await sync.sync();
+  assert.equal(at.length, 2);
+  const gap = at[1] - at[0];
+  assert.ok(DEFAULT_BATCH_GAP_MS >= 4000, '实测过的那一档不短于 4000ms；要调小，先重新量');
+  assert.ok(gap >= DEFAULT_BATCH_GAP_MS - 100, '两批之间只隔了 ' + gap + 'ms，默认间隔没生效');
 });

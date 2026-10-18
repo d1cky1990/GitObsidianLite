@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { searchTitles, searchBodies, findSnippet, normalizeQuery, isNote } from './search.js';
+import { searchTitles, searchBodies, findSnippet, normalizeQuery, isNote, bodyGroupView, coveredCount } from './search.js';
 
 const PATHS = [
   'b/note-b.md',
@@ -84,4 +84,81 @@ test('只搜笔记：附件与配置目录不进结果', () => {
   assert.equal(isNote('a/b.MD'), true);
   assert.equal(isNote('a/b.png'), false);
   assert.equal(isNote('a/.obsidian/app.json'), false);
+});
+
+/* ---------- 正文那一组该怎么说话（#38 改的口径：副本没备齐也允许参与搜索） ----------
+ *
+ * 这组断言盯的是一件事：**「还没备到」不许说成「没有命中」**。
+ * 那条规矩原来靠「整组不出」实现（#32 §5）；#38 按限流现实改成「出已到手的那部分」，
+ * 于是这层防线从「不出」挪到了「措辞」上——它比原来更容易被写坏，所以钉在这里。
+ */
+
+test('正文组：开关没开就整组不出现', () => {
+  const g = bodyGroupView({ enabled: false, covered: 100, total: 877, loaded: true, hitCount: 3 });
+  assert.equal(g.kind, 'hidden');
+  assert.equal(g.note, '');
+});
+
+test('正文组：一篇都还没到手 → 说清为什么，不是「没有命中」', () => {
+  const g = bodyGroupView({ enabled: true, covered: 0, total: 877, loaded: false, hitCount: 0 });
+  assert.equal(g.kind, 'no-copy');
+  assert.doesNotMatch(g.note, /没有命中/);
+});
+
+test('正文组：手上有正文但还没读出来 → loading，也不下结论', () => {
+  const g = bodyGroupView({ enabled: true, covered: 10, total: 877, loaded: false, hitCount: 0 });
+  assert.equal(g.kind, 'loading');
+});
+
+test('正文组：只备了一部分且有命中 → 出结果，并说清只覆盖了多少篇', () => {
+  const g = bodyGroupView({ enabled: true, covered: 210, total: 877, loaded: true, hitCount: 2 });
+  assert.equal(g.kind, 'partial-hits');
+  assert.equal(g.complete, false);
+  assert.match(g.note, /210/);
+  assert.match(g.note, /877/);
+});
+
+test('正文组：只备了一部分、这部分没命中 → 不许多说一个字「没有命中」', () => {
+  const g = bodyGroupView({ enabled: true, covered: 210, total: 877, loaded: true, hitCount: 0 });
+  assert.equal(g.kind, 'partial-empty');
+  assert.doesNotMatch(g.note, /没有命中|没找到|没有相关/);
+  // 必须把「还有多少篇没看过」说出来，否则读起来仍像「真的没有」
+  assert.match(g.note, /667/);
+});
+
+test('正文组：与远端对齐了，这时「没有命中」才是真的没有', () => {
+  const g = bodyGroupView({ enabled: true, covered: 877, total: 877, loaded: true, hitCount: 0 });
+  assert.equal(g.kind, 'empty');
+  assert.equal(g.complete, true);
+});
+
+test('正文组：对齐了且有命中 → 出结果，不必再解释范围', () => {
+  const g = bodyGroupView({ enabled: true, covered: 877, total: 877, loaded: true, hitCount: 5 });
+  assert.equal(g.kind, 'hits');
+  assert.equal(g.note, '');
+});
+
+test('正文组：清单还没到手（总数未知）时，绝不冒充「对齐了」', () => {
+  const g = bodyGroupView({ enabled: true, covered: 0, total: 0, loaded: false, hitCount: 0 });
+  assert.equal(g.complete, false);
+  assert.equal(g.kind, 'no-copy');
+});
+
+test('正文组：手上有正文、但远端清单还没到手 → 不编出「共 0 篇」这种数', () => {
+  // 打开应用的头几秒就是这个状态：本地副本已经读出来了，整棵树（3~5 秒）还没回来。
+  // 此时说「只备了 870 / 共 0 篇」比什么都不说更糟——那个 0 是假的。
+  const g = bodyGroupView({ enabled: true, covered: 870, total: 0, loaded: true, hitCount: 0 });
+  assert.equal(g.kind, 'unknown-scope');
+  assert.equal(g.complete, false);
+  assert.match(g.note, /870/);
+  assert.doesNotMatch(g.note, /共 0/, '不许把「不知道」写成「共 0 篇」');
+});
+
+test('覆盖范围按路径求交集：本地多出的废记录不算覆盖', () => {
+  // 远端有 a/b/c 三篇，本地存着 a/b 加一条远端已删的 zzz。
+  // 条数比（3 === 3）会假对齐，然后大胆说「正文里没有命中」；交集说 2。
+  assert.equal(coveredCount(['a.md', 'b.md', 'c.md'], ['a.md', 'b.md', 'zzz.md']), 2);
+  assert.equal(coveredCount(['a.md', 'b.md', 'c.md'], new Set(['a.md', 'b.md', 'c.md'])), 3);
+  assert.equal(coveredCount([], ['a.md']), 0);
+  assert.equal(coveredCount(['a.md'], []), 0);
 });

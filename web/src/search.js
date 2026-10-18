@@ -83,6 +83,66 @@ export function isNote(path) {
   return MD_EXT.test(String(path ?? ''));
 }
 
+/**
+ * 覆盖范围：**远端清单里这些篇，本机手上有几篇**（#38 的「只备了 X / 共 Y 篇」）。
+ *
+ * 注意这里不是「本地存了几条」。本地可能还留着远端已经删掉的那一条（下次同步才清），
+ * 拿条数去比会**假对齐**——两边条数正好相等、而缺的那一篇被一条废记录顶掉，
+ * 于是就敢说「正文里没有命中」。按路径求交集没有这个洞。
+ *
+ * @param {string[]} remotePaths 远端清单里的笔记路径
+ * @param {Iterable<string>} localPaths 本地正文副本里的路径（数组或 Set）
+ */
+export function coveredCount(remotePaths, localPaths) {
+  const have = localPaths instanceof Set ? localPaths : new Set(localPaths || []);
+  let n = 0;
+  for (const p of remotePaths || []) if (have.has(p)) n += 1;
+  return n;
+}
+
+/**
+ * 正文那一组**该怎么说话**（#38 改的口径：副本没备齐也允许参与搜索）。
+ *
+ * 这是本项目最容易被写坏的一句话：**「还没备到」不许说成「没有命中」**。
+ * 所以判断与措辞都放在这里，渲染层照着 `kind` 摆位置，不自己拼句子——
+ * 拼错一次，用户就会以为那篇笔记不存在。
+ *
+ * @param {{enabled:boolean, covered?:number, total?:number, loaded?:boolean, hitCount?:number}} s
+ *   enabled  开关开着没有；covered 本地副本里有几篇；total 远端清单里有几篇；
+ *   loaded   本地那份读过来了没有；hitCount 正文里命中几条
+ * @returns {{kind:'hidden'|'no-copy'|'loading'|'unknown-scope'|'hits'|'partial-hits'|'empty'|'partial-empty',
+ *            covered:number, total:number, complete:boolean, note:string}}
+ *   - `hidden`        开关没开：整组不出现（一栏永远写着「去设置里打开」只是白占屏幕）
+ *   - `no-copy`       一篇都还没到手：说清为什么（此时搜正文必然一个都搜不到）
+ *   - `loading`       手上有正文，正在从本地读
+ *   - `unknown-scope` 手上有正文，但**远端清单还没到手**，说不清覆盖了多少：只报手上的篇数，
+ *                     **不许编出「共 0 篇」这种数**（打开应用的头几秒就是这个状态）
+ *   - `hits`          命中，且副本与远端对齐
+ *   - `partial-hits`  命中，但只覆盖了一部分：`note` 要放在结果**之前**
+ *   - `empty`         对齐了、真没有
+ *   - `partial-empty` 手上这部分没有，但还有没备到的：`note` 不是「没有命中」，是范围说明
+ */
+export function bodyGroupView({ enabled, covered = 0, total = 0, loaded = false, hitCount = 0 }) {
+  const known = total > 0;   // 远端清单到了没有。没到就别谈「齐了没有」
+  const base = { covered, total, complete: known && covered >= total, note: '' };
+  if (!enabled) return { ...base, kind: 'hidden', complete: false };
+  if (covered <= 0) return { ...base, kind: 'no-copy' };
+  if (!loaded) return { ...base, kind: 'loading' };
+  if (!known) {
+    return { ...base, kind: 'unknown-scope', note: '仓库清单还没到手，眼下只有本机备着的 ' + covered + ' 篇参与搜索。' };
+  }
+  const missing = total - covered;
+  if (hitCount > 0) {
+    return base.complete
+      ? { ...base, kind: 'hits' }
+      : { ...base, kind: 'partial-hits', note: '本地正文只备了 ' + covered + ' / 共 ' + total +
+          ' 篇，下面只是这 ' + covered + ' 篇里的命中。' };
+  }
+  return base.complete
+    ? { ...base, kind: 'empty' }
+    : { ...base, kind: 'partial-empty', note: '已备的 ' + covered + ' 篇里没有；还有 ' + missing + ' 篇没备到。' };
+}
+
 function baseName(path) {
   const s = String(path ?? '');
   const i = s.lastIndexOf('/');

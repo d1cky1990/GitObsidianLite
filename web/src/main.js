@@ -22,7 +22,7 @@ import { installTagRule } from './tags.js';
 import { installFrontmatterRule } from './frontmatter.js';
 // 搜索（#16 定稿 → #33）：入口常驻列表页顶部，默认只搜标题与路径——那靠的是上面
 // 那份全库名单，零新增请求。正文搜索背后是本地那份正文副本，规则定在 #32。
-import { searchTitles, searchBodies, normalizeQuery } from './search.js';
+import { searchTitles, searchBodies, normalizeQuery, bodyGroupView, coveredCount } from './search.js';
 import { createNoteStore } from './note-store.js';
 import { createBodySync } from './note-sync.js';
 import './style.css';
@@ -314,10 +314,15 @@ function remoteNoteCount() {
   return wikilinkIndex ? wikilinkIndex.notePaths.length : 0;
 }
 
-/** 本地副本齐了没有。还没拿到名单时一律算没齐——不许先装成能用 */
-function bodyReadyNow() {
-  const total = remoteNoteCount();
-  return prefs.body && total > 0 && state.bodyCount >= total;
+/**
+ * 本地正文**够不够拿来搜**：有就搜，哪怕只有一部分（#38 改的口径）。
+ *
+ * 原先这里是「备齐了才能搜」。按 #38 实测的上游限流（真跑一次全量要好几分钟，而手机上
+ * 标签页常被系统冻住、说关就关），那条规矩的实际后果是：**正文搜索可能长期等于没有**。
+ * 改成「到手的就能搜 + 明说覆盖了多少篇」——宁可带着一句限定，也不要整组空着。
+ */
+function bodyUsable() {
+  return prefs.body && state.bodyCount > 0;
 }
 
 async function refreshBodyStats() {
@@ -350,8 +355,9 @@ async function syncBodies({ consider = false, reused = false } = {}) {
   bodyRecords = null;
   await refreshBodyStats();
   // 用户正停在结果页：本地那份要重读一遍，否则「正文」那一组会拿一份空的去算，
-  // 把「刚备好」显示成「正文里没有命中」
-  if (state.view === 'list' && normalizeQuery(state.query) && bodyReadyNow()) await loadBodyRecords();
+  // 把「刚备好」显示成「正文里没有命中」。**只要手上有正文就重读**——现在允许
+  // 部分参与，备到一半也值得把新到的那几篇并进眼前的结果里。
+  if (state.view === 'list' && normalizeQuery(state.query) && bodyUsable()) await loadBodyRecords();
   renderIfIdle();
   const s = bodySync.state;
   if (state.view === 'editor') return; // 别往正在写的人屏幕上弹东西
@@ -392,14 +398,31 @@ async function checkOnline() {
 function searchState() {
   const q = normalizeQuery(state.query);
   if (!q) return null;
-  const ready = bodyReadyNow();
+  const usable = bodyUsable();
   return {
     q,
     indexReady: !!wikilinkIndex,
     titles: wikilinkIndex ? searchTitles(wikilinkIndex.notePaths, q) : [],
-    bodyReady: ready,
-    bodyLoaded: ready && !!bodyRecords,
-    bodies: ready && bodyRecords ? searchBodies(bodyRecords, q) : [],
+    bodyLoaded: usable && !!bodyRecords,
+    bodies: usable && bodyRecords ? searchBodies(bodyRecords, q) : [],
+    ...bodyCoverage(),
+  };
+}
+
+/**
+ * 「只备了 X / 共 Y 篇」里的两个数。
+ *
+ * X 取**交集**（远端有、本地也有），不是本地条数——本地可能还留着远端已删的那一条，
+ * 拿条数比会假对齐，然后就敢说「正文里没有命中」（见 `search.js` 的 `coveredCount`）。
+ * 名单或本地副本还没到时给不出 X，退回「本地存了几条」这个已知数，并靠 `total`
+ * 为 0 让结论落到「说不清」（`unknown-scope`）而不是编一个假对齐。
+ */
+function bodyCoverage() {
+  const total = remoteNoteCount();
+  if (!bodyRecords || !wikilinkIndex) return { bodyCovered: state.bodyCount, bodyTotal: total };
+  return {
+    bodyCovered: coveredCount(wikilinkIndex.notePaths, bodyRecords.map((r) => r.path)),
+    bodyTotal: total,
   };
 }
 
@@ -434,33 +457,55 @@ function renderResults() {
   if (!prefs.body) return html;
 
   html += '<div class="res-group"><div class="res-head">正文' +
-    (s.bodyReady && s.bodyLoaded ? '<span class="res-n">' + s.bodies.length + '</span>' : '') + '</div>';
-  if (!s.bodyReady) {
-    // 未就绪时**整组不出结果**，只留一句说明（#32 §5 定的，比 #33 票面那句更严）
-    html += '<div class="res-note dim">' + bodyNotReadyText() + '</div>';
-  } else if (!s.bodyLoaded) {
+    (s.bodyLoaded ? '<span class="res-n">' + s.bodies.length + '</span>' : '') + '</div>';
+  // 该说什么、按什么顺序说，全在 `bodyGroupView` 里（纯函数，单测盯着它）。
+  // 这里只管把句子摆到位置上：覆盖范围要在结果**之前**，否则等于让人先读完结果
+  // 再发现它是残缺的。只有「用这句话顶替结果」的两种 kind，才把 note 摆到空位上。
+  const g = bodyGroupView({
+    enabled: true,
+    covered: s.bodyCovered,
+    total: s.bodyTotal,
+    loaded: s.bodyLoaded,
+    hitCount: s.bodies.length,
+  });
+  const noteInEmptySlot = g.kind === 'partial-empty' || (g.kind === 'unknown-scope' && !s.bodies.length);
+  if (g.note && !noteInEmptySlot) html += '<div class="res-note dim">' + esc(g.note) + '</div>';
+  if (g.kind === 'no-copy') {
+    // 一篇都还没到手：这时候搜正文必然一个都搜不到，说清楚为什么（不是「没找到」）
+    html += '<div class="res-note dim">' + esc(bodyNotReadyText()) + '</div>';
+  } else if (g.kind === 'loading') {
     html += '<div class="res-note dim">正在读本地正文…</div>';
-  } else {
-    html += s.bodies.length
-      ? s.bodies.map(resultRow).join('')
-      : '<div class="res-empty dim">正文里没有命中</div>';
+  } else if (s.bodies.length) {
+    html += s.bodies.map(resultRow).join('');
+  } else if (g.kind === 'empty') {
+    html += '<div class="res-empty dim">正文里没有命中</div>';
+  } else if (g.note) {
+    // 没备齐时**不许说「没有命中」**：那会把「还没备到」说成「这篇不存在」——
+    // 与 §8 的中性态同一条规矩，只是从「整组不出」退一步到「出了但说清范围」。
+    html += '<div class="res-empty dim">' + esc(g.note) + '</div>';
   }
   html += '</div>';
   return html;
 }
 
+// 一篇正文都还没有时的那句说明。**它只在 bodyUsable() 为假时出现**——只要手上有一篇，
+// 正文组就会正常出结果（外加一行覆盖范围），不再整组空着。
 function bodyNotReadyText() {
   const s = bodySync.state;
   const total = remoteNoteCount();
+  if (!total) return '本地正文还没开始备（文件名单还在加载）。';
   if (s.status === 'blocked') {
-    return '已备 ' + state.bodyCount + ' / 共 ' + total + ' 篇，上游不让接着取了（' + s.error +
-      '）。已经到手的那部分留着，下次打开接着备。备好前只搜标题。';
+    return '一篇都还没备到：上游不让接着取了（' + s.error + '），下次打开会接着备。';
   }
-  if (s.status === 'error') return '本地正文没备起来：' + s.error + '。备好前只搜标题。';
+  if (s.status === 'error') return '本地正文没备起来：' + s.error + '，下次打开会再试。';
   if (s.status === 'capped') {
-    return '已备 ' + state.bodyCount + ' / 共 ' + total + ' 篇，到了容量上限就停了（去设置里把上限放大）。备好前只搜标题。';
+    return '一篇都还没备到：到了容量上限就停了（去设置里把上限放大）。';
   }
-  return '本地正文正在备（已 ' + state.bodyCount + ' / 共 ' + total + ' 篇），备好前只搜标题。';
+  if (s.status === 'running') {
+    return '本地正文正在备（已 0 / 共 ' + total + ' 篇），到手一篇就能搜一篇。';
+  }
+  // 没在跑、手里又一篇都没有：别把「没开始」说成「正在备」——那是两种不同的下一步
+  return '本地正文还没备上（已 0 / 共 ' + total + ' 篇），下次打开会再试。';
 }
 
 /* ---------- 搜索框 ---------- */
@@ -531,7 +576,7 @@ function onQueryChanged() {
     // 不然断网时打开的那一页，恢复联网后搜索会一直空着（名单永远停在中性态）。
     // 只在确认在线时催：离线时每个字都去拉一遍清单，是把一次故障放大成无数次。
     if (ok && !wikilinkIndex) ensureIndex().catch(() => {});
-    if (ok && bodyReadyNow()) await loadBodyRecords();
+    if (ok && bodyUsable()) await loadBodyRecords();
     if (seq !== searchSeq) return;
     render();
   })();

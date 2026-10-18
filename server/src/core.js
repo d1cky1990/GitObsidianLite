@@ -223,7 +223,12 @@ function upstreamErrorText(status, body) {
  * 连续取到第 600 多篇时开始回 **403 + 百度云 WAF 的拦截页**，之后连 `/api/head`
  * 都一起被拦（同一个出口 IP）。也就是说「全库拉一遍」这件事**不能一波猛冲**，
  * 客户端得自己控速、并在撞墙时停下来。`BLOB_CONCURRENCY` 只管一批内的并发，
- * 批与批之间的节奏在客户端（见 `web/src/note-sync.js` 的 `batchGapMs`）。
+ * 批与批之间的节奏在客户端（见 `web/src/note-sync.js` 的 `DEFAULT_BATCH_GAP_MS`）。
+ *
+ * **那之后又验过一遍，控速是够的**（#38）：按客户端的默认节奏从零跑完一次全库，零 403，
+ * 过了当初那个 600 多篇的坎（数字住在 `docs/design/obsidian-mobile-web/spec.md` §4，测法在
+ * `scripts/probe-upstream-rate.mjs`）。但那次覆盖的是一条出口，而线上经 Workers 出去是另一
+ * 批 IP——所以这条路上的节奏**仍然按客户端控住**，别在服务端这边顺手加并发或加批大小。
  *
  * @param {{GITEE_OWNER:string, GITEE_REPO:string}} env
  * @param {{path:string, sha:string}[]} files

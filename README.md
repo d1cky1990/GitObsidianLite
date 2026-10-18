@@ -34,6 +34,8 @@ node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则
 
 两边都是 `node --test`，没有额外测试框架。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`、`web/src/note-sync.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
 
+**要改「首次备正文」的节奏，先跑量它的工具**：`node scripts/probe-upstream-rate.mjs`（`--limit 5` 冒烟）。它按客户端那套节奏直接打 Gitee 的 `git/blobs`，撞到第一次 403 就停、只量恢复时间，成绩单写到 `.scratch/`。上一轮的数字与结论住在 `docs/design/obsidian-mobile-web/spec.md` §4——**别凭「首次太慢」就往下调**，上游是按出口 IP 一刀切的，撞上了是整台机器二十分钟用不了（[#38](https://github.com/d1cky1990/GitObsidianLite/issues/38)）。
+
 单测盯的是纯函数；**一张票交付前还要在真语料上跑一遍**：从归档解出全库路径清单与每篇正文，`import` 被测模块**本身**整体渲染一遍，用改完的真实代码路径数结果。不要另写一份复刻被测逻辑的复算脚本——两边会一起错，而且错得看不出来。
 
 这条吃过两次亏，两次都是「拿另一把尺子量」：`#7` 数出的「173 条目标非 `.md`」里只有 40 条真有文件；`#8` 数出的「107 条解析不到」里有 6 条落在 markdown-it 根本不渲染的缩进代码块里。**尺子必须和被测的东西在同一层**——文本层的正则数与渲染层真产出的 `<img>` 是两个数。
