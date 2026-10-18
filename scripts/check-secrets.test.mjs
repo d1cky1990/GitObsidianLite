@@ -18,6 +18,7 @@ import {
   isSecretKeyName,
   isLiteralValue,
   entropy,
+  loadFingerprints,
 } from './check-secrets.mjs';
 
 /* ---------------- 假凭据 ----------------
@@ -237,4 +238,14 @@ test('扫描器不把自己的测试语料当成泄漏', async () => {
     '假凭据必须写成中性常量 + 插值引用；直接写「秘密词 = 像真值的字面量」，' +
     '扫描器会把测试文件本身拦下来（实测发生过）。',
   );
+});
+
+test('指纹层认得部署令牌——它只活在本机环境变量里，配置文件里没有它的影子', () => {
+  // 部署令牌不进 server/.dev.vars（那份文件会被整份读进应用进程），所以
+  // 「配置文件指纹」这一层对它完全失明，只能靠环境变量这一路。漏了这一个名字，
+  // 这层防护就对最该防的那把钥匙视而不见。
+  const found = loadFingerprints('/nonexistent-root', { CLOUDFLARE_API_TOKEN: HEX32 });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].key, 'CLOUDFLARE_API_TOKEN');
+  assert.equal(found[0].value, HEX32);
 });

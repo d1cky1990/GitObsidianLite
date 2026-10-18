@@ -208,8 +208,15 @@ export function loadFingerprints(root, env = process.env) {
       if (value.length >= 8) out.push({ source: rel, key: m[1], value });
     }
   }
-  // 同名环境变量（CI 里注入的那一份）
-  for (const key of ['GITEE_TOKEN', 'APP_PASSWORD', 'DENO_DEPLOY_TOKEN']) {
+  // 同名环境变量（CI 里注入的那一份）。部署平台的令牌也在这里——
+  // 它不在任何配置文件里，只活在本机环境变量里，所以只能靠这一层认出来。
+  // 一个名字一行：这一层的「敏感词紧邻」规则会把同一行里前一个 *_TOKEN 当成
+  // 后一个的线索，于是 `'CLOUDFLARE_API_TOKEN'` 会被当成高熵串报出来（实测）。
+  for (const key of [
+    'GITEE_TOKEN',
+    'APP_PASSWORD',
+    'CLOUDFLARE_API_TOKEN',
+  ]) {
     const value = env[key];
     if (value && value.length >= 8) out.push({ source: '环境变量', key, value });
   }

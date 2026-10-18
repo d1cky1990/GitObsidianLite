@@ -4,25 +4,24 @@
 
 ## 目录
 
-- `server/src/core.js` — 平台无关 API 核心（藏 token、解 CORS，代理 Gitee API v5），Workers 与 Deno 共用
-- `server/src/index.js` — Cloudflare Workers 薄适配器（本地开发用）
-- `deploy/main.ts` — Deno Deploy 入口（静态伺服 + API 代理，零外部依赖）
+- `server/src/core.js` — 平台无关 API 核心（藏 token、解 CORS，代理 Gitee API v5）
+- `server/src/index.js` — Cloudflare Workers 入口：`/api/*` 交给 core，其余交给静态资源（**线上与本地都走它**）
+- `server/wrangler.toml` — Worker 配置：入口、静态资源目录（`web/dist`）、两个普通变量
 - `web/` — 前端（Vite + 原生 JS + markdown-it）
-- `deno.json` — Deno Deploy 部署配置（org/app/entrypoint/上传白名单）
-- `scripts/` — 仓库工具：提交前凭据检查、hook 安装
-- `.githooks/pre-commit` — 上面那个检查的挂载点（见「提交前凭据检查」）
+- `deploy/main.ts` — 旧的 Deno Deploy 入口（平台约 2027-04 关停，留作参考，**不再是部署路径**）；`deno.json` 是它的配置
+- `scripts/` — 仓库工具：一条命令的部署（`deploy.mjs`）、提交前凭据检查、hook 安装
+- `.githooks/pre-commit` — 凭据检查的挂载点（见「提交前凭据检查」）
 
 ## 本地运行
 
-前置：Node 22。想跑第 4 步的线上形态，还需要 [Deno](https://docs.deno.com/runtime/getting_started/installation/)（Windows 用 `irm https://deno.land/install.ps1 | iex`）——注意官方安装脚本**不会**替你把 `~/.deno/bin` 加进 PATH，装完要自己加，然后**重开终端**。
+前置：Node 22。
 
-1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填入 Gitee 私人令牌、owner、仓库名。
+1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填入 Gitee 私人令牌、owner、仓库名。**这份文件同时是部署用的那一份配置**，只有一处（见「部署上线」）。
 2. 起后端：`cd server && npm install && npm run dev`（默认 `http://localhost:8787`）。
 3. 起前端：`cd web && npm install && npm run dev`（默认 `http://localhost:5173`，`/api` 已代理到后端）。
-4. 想验证**线上形态**（前后端同进程伺服）时，改用 Deno 直接跑全栈：先 `cd web && npm run build`，再
-   `PORT=8230 deno run --allow-net --allow-read --allow-env --env-file=server/.dev.vars deploy/main.ts`。
+4. 想验证**线上形态**（前后端同进程伺服）：先 `cd web && npm run build`，再 `cd server && npm run dev` 并打开 `http://localhost:8787`。线上就是这么跑的——`web/dist` 在 `wrangler.toml` 里被当作静态资源目录。
 
-浏览器打开 `http://localhost:5173`（或第 4 步的 `http://localhost:8230`）即可。
+浏览器打开 `http://localhost:5173`（或第 4 步的 `http://localhost:8787`）即可。
 
 > Windows 上 8000 附近可能落在 Hyper-V 的保留端口段里，起不来就用 `netsh int ipv4 show excludedportrange protocol=tcp` 查一下，换一个端口。
 
@@ -88,34 +87,84 @@ node scripts/check-secrets.mjs --status   # 未启用时退出码为 1
 node --test "scripts/**/*.test.mjs"
 ```
 
-## 部署上线（Deno Deploy）
+## 部署上线（Cloudflare Workers）
 
-- 架构：`server/src/core.js`（平台无关 API 核心）被 `server/src/index.js`（本地 wrangler）与 `deploy/main.ts`（Deno 入口，静态 + API 一体）共用。
-- 配置：`deno.json` 的 `deploy` 块指定 org/app/entrypoint 与上传白名单。
-- 两类凭据，落点不同，别搞混：
-  - **应用凭据**（`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO` / 可选 `APP_PASSWORD`）——本地开发放 `server/.dev.vars`（`.gitignore` 已排除，不上传）；线上放**部署平台的环境变量**。
-  - **部署令牌**（`DENO_DEPLOY_TOKEN`）——只用于从本机推代码，**不属于应用**，不要放进 `server/.dev.vars`（那个文件会被整份读进应用进程环境变量，见「本地运行」第 4 步的 `--env-file`）。放**本机环境变量**即可。
-- 步骤：
-  1. 装 Deno；`console.deno.com` 注册（新账号创建需梯子一次）。
-  2. 在 <https://console.deno.com/account/tokens> 生成访问令牌，设为本机环境变量 `DENO_DEPLOY_TOKEN`（cmd：`setx DENO_DEPLOY_TOKEN "..."`，用 cmd 而非 PowerShell——PowerShell 会把命令记进历史文件，令牌跟着落盘）。
-  3. 填 `server/.dev.vars`：`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`（+ 可选 `APP_PASSWORD`）。
-  4. 把 `deno.json` 里的 `org` 改成你自己的组织，然后 `deno run -A jsr:@deno/deploy create --org <你的org> --app <app名> --source local --region global --do-not-use-detected-build-config --runtime-mode dynamic --entrypoint deploy/main.ts`（`--do-not-use-detected-build-config` 很关键，否则会误用 Vite 探测覆盖入口）。
-  5. 推环境变量：`deno run -A jsr:@deno/deploy env add GITEE_TOKEN <值> --secret --org <org> --app <app>`（其余同理，`GITEE_OWNER` / `GITEE_REPO` 不是机密、不加 `--secret`）。**注意别用 `env load server/.dev.vars`**——它会把文件里的变量全部灌上去，若里面还留着部署令牌就一并交出去了。
-  6. 重部署：`deno check deploy/main.ts` → `cd web && npm install && npm run build` → `deno run -A jsr:@deno/deploy --prod`。
-- 访问保护：服务端 `APP_PASSWORD` 环境变量，前端输一次存 localStorage、请求头携带。
+```sh
+node scripts/deploy.mjs
+```
 
-### 已知坑
+一条命令跑完，不用先建应用、也不用逐个推变量。
 
-- **CLI 必须用 `deno run -A jsr:@deno/deploy`**，不要用内置的 `deno deploy` wrapper——它有 `--help` / `--prod` 重复注入的 bug。
-- **`deno deploy` 的交互式登录在 Windows 上不工作**：会报 `Unable to interact with keychain. The authentication will not be stored...`——注意后半句，**授权结果不会被保存**，即使浏览器登录成功也留不下凭据。即钥匙串方案不可用，`DENO_DEPLOY_TOKEN` 是唯一的持久化方式。（`deno deploy logout` 同理，无凭据可清。）
-- **别用子域名探测判断 app 是否还存在**：Deno 对 `*.deno.net` 做**通配 DNS 解析**，一个确定不存在的 app 子域同样能解析、并返回 `404 DEPLOYMENT_NOT_FOUND`。没有阴性对照就会误判。看控制台或 `deno deploy apps` 更可靠。
-- **`--do-not-use-detected-build-config` 不能省**。否则 create 会做框架自动探测，认出 `web/` 的 Vite 并覆盖你传的 `--entrypoint`，构建报 "No runtime entrypoint provided"。
-- **`deno.json` 的 `deploy` 块必须含 `org` 字段**，否则 create 报 "missing field org"。
-- **云端构建跑严格 `deno check`**，而本地 `deno run` 会放过隐式 any。**部署前先 `deno check deploy/main.ts`**。
-- **构建失败看日志**：`console.deno.com/api/v2/revisions/{id}/build_logs`（注意路径是 `/api/v2/` 不是 `/v2/`，需 Bearer 令牌 + `X-Deno-Org` 头）。
-- **环境变量默认不会被标成 secret**（用 `env add` 时要显式加 `--secret`，用 `env list` 可复核 `isSecret`）。已实测**两个机密不会出现在构建日志里**，但别据此省略 `--secret`——`env list` 会把非 secret 的值明文回传。
-- **新账号注册会被区域限制**（`403 SIGNUP_UNAVAILABLE`），需要梯子一次；之后的 API、部署、运行时域名在大陆均可直连（已实测）。
-- **上传白名单在 `deno.json` 的 `include`**：`web/dist` 虽被 `.gitignore` 排除，但仍靠这个白名单带上，删它会导致线上静态资源缺失。
+**前提只有两件**：
+
+1. 一个 Cloudflare 账号（免费档够用）。
+2. 本机环境变量 `CLOUDFLARE_API_TOKEN` 里放一个 API 令牌：
+
+   ```
+   setx CLOUDFLARE_API_TOKEN "..."
+   ```
+
+   在 cmd 里跑，然后**重开终端**。用 cmd 而不是 PowerShell：后者会把命令记进历史文件，令牌跟着落盘。令牌在控制台的 My Profile → API Tokens 建，模板选 "Edit Cloudflare Workers"。
+
+**配置只有一处**：`server/.dev.vars`（从 `.dev.vars.example` 复制）。三项必填——`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`，加一个可选的 `APP_PASSWORD`。本地开发和部署读的是同一份，脚本**只挑这几项**推上去，文件里多出来的键一律不推。
+
+**部署令牌不进这个文件**：它只在本机环境变量里。那份文件会被整份读进应用进程（`wrangler dev` 直接读它），把不属于应用的东西放进去，等于顺手交出去。
+
+### 这条命令会依次做什么
+
+| 步 | 做什么 | 没过时 |
+|---|---|---|
+| 1 | 读 `server/.dev.vars` | 点名缺哪一项、该去哪补 |
+| 2 | 查 `CLOUDFLARE_API_TOKEN` | 点名令牌没设，附去哪生成 |
+| 3 | **自检**（本机 → gitee.com）：令牌活否 / 仓库在否 / 有没有写权限 / 默认分支读不读得到 | 配置类点名改哪一项；网络类说重跑一次 |
+| 4 | 构建前端（`web/dist`；缺依赖时先 `npm install`） | 给最后几行输出与手动复现的命令 |
+| 5 | 推机密（`GITEE_TOKEN`，设了密码再加 `APP_PASSWORD`）→ `wrangler deploy`（owner 与仓库名跟着这条命令走） | 认得出就点名：令牌不认 / 账号不止一个 / 没连上 |
+| 6 | **确认**（Cloudflare → gitee.com）：打一次线上地址、读一次仓库最新版本 | 分清「没部署成功」与「部署成功但连不上仓库」 |
+
+第 3 步放在开头不是随手排的：它走「本机 → gitee.com」，五秒出结果。放在构建之后才停，就白等几分钟。
+
+第 6 步不能省，因为它走的是**另一条网络路**——「Cloudflare → gitee.com」。本机自检全过，不等于线上够得到仓库；这两句话说的不是一件事。
+
+**幂等**：Workers 没有「建应用」这一步，`wrangler deploy` 第一次跑就把 Worker 建出来。紧接着再跑一次只是重新构建、重新上传，机密已存在就改值。
+
+### 失败怎么读
+
+两种话，对应两种动作：
+
+- **说得清的**（令牌 / 仓库名 / 写权限 / 缺变量）→ 点名哪一项、去哪改。改完重跑。
+- **说不清的**（网络 / 对方临时出错）→ 「这项没测出来，多半是网络，重跑一次」。
+
+**没有强行部署的开关。** 这条命令包的只是几步标准步骤、不是黑盒：它每一步都以 `▸ n/6 …` 打出来，背后就是 `wrangler`（装在 `server/` 里，部署由 `wrangler deploy` 完成）。检查本身有毛病时，人看得到卡在哪一步。
+
+### 仓库还没建？
+
+```
+node scripts/deploy.mjs --create-repo
+```
+
+脚本会在**你自己的账号下**建一个私有仓，并在仓库根放一篇示例笔记（`从这里开始.md`：标题 / 列表 / 勾选框 / 双链 / 标签各演示一遍），让第一次打开不是空白页。名字被占了就停下让你改名，**不自动加后缀**——那样会凭空多出一个仓，你自己都找不到。已有仓库不用管这个参数。
+
+### 想先看会不会炸？
+
+```
+node scripts/deploy.mjs --dry-run
+```
+
+自检、构建、试打包，不上传、不推变量。
+
+### 访问保护
+
+`APP_PASSWORD`（可选）：设了之后所有 `/api` 请求要带 `X-Auth` 头，前端输一次存 localStorage。**不设就完全不鉴权**——靠「地址不公开 + 免费档没人枚举」兜底，地址一旦泄漏即等同无保护。
+
+### GitHub 那条路（旁路，不是主路径）
+
+本项目的应用只对接 Gitee：`server/src/core.js` 里写的全是对 Gitee API v5 的调用。把**笔记仓库**换成 GitHub 这条路**现在不通**，它缺的是一层适配，不是改个名字。
+
+- **要求能连上 `github.com`**。这个域名在大陆不挂梯子实测不通，而 `api.github.com` 通——所以「接口回得正常」不能当作「这条路能用」：注册、生成令牌、首次授权都要过 `github.com` 那一步。
+- **令牌范围不一样**：GitHub 勾 `repo`，Gitee 勾 `projects`。
+- **仓库名写法一样**（`owner/repo`），但接口路径、错误体措辞、以及「一个 400 混着好几种错」的那套脾气全不同——见下面「Gitee 写操作的脾气」，那几条按措辞判定的规则在 GitHub 上一条都不成立，得重写一遍。
+
+给本来就把**代码**放在 GitHub 的人：代码放哪都行（本仓库自己的 issue 就在 GitHub 上）。但应用读写的那个**笔记仓库**目前只能是 Gitee。
 
 ## 后端 API
 
@@ -151,8 +200,9 @@ node --test "scripts/**/*.test.mjs"
 
 前置条件：
 - 一个 Gitee 账号 + 一个存放笔记的仓库（公开私有都行，令牌需 `projects` 权限）
-- 一台能跑 Node 22 的机器（本地开发），以及 [Deno](https://docs.deno.com/runtime/getting_started/installation/) + 一个 Deno Deploy 账号（线上部署）。**Deno 装完必须把安装目录加进 PATH**（官方 Windows 脚本不会自动加），否则终端认不出 `deno` 命令
-- 如果需要**中国大陆免梯子访问**：Deno 账号注册需梯子一次，之后部署与访问均直连（平台政策可能变化，建议自行实测）
+- 一台能跑 Node 22 的机器（构建前端、跑那条部署命令都要它）
+- 一个 Cloudflare 账号 + 一个 API 令牌（见「部署上线」）
+- **访问方式**：`*.workers.dev` 在国内长期不稳，日常打开大概要挂着梯子。这是选这个平台时明确接受的代价（[#39](https://github.com/d1cky1990/GitObsidianLite/issues/39)），不是配置没调好
 
 ## 许可证
 
