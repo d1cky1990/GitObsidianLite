@@ -10,8 +10,17 @@
 // 用法（令牌从 `server/.dev.vars` 读，不进命令行、不进仓库）：
 //
 //   node scripts/probe-upstream-rate.mjs --limit 5          # 冒烟：只取 5 篇，确认能跑通
-//   node scripts/probe-upstream-rate.mjs                    # 全量：按当前生产节奏跑完全库（篇数每次现数）
+//   node scripts/probe-upstream-rate.mjs                    # 按生产节奏跑完全库（篇数每次现数）
 //   node scripts/probe-upstream-rate.mjs --gap 8000         # 换一个批间隔再测
+//   node scripts/probe-upstream-rate.mjs --ramp             # **加压**：逐档抬速率，量撞墙点
+//
+// 两种模式：
+//   - **默认（按生产形态）**：一批 20、批内并发 6、批与批间隔 `--gap`。它回答「照这个节奏
+//     备完全库会不会撞墙」。撞上就停，只量恢复时间。
+//   - **`--ramp`（加压）**：把「每分钟多少个请求」一档一档往上抬（`--ladder 60,120,...`，
+//     每档 `--stage-seconds` 秒），回答「这台机器的出口 IP 到底撑到多少才开始拦」。
+//     **它一定会撞墙**——这正是它的用途，代价是这个出口 IP 会有约 20 分钟连不上 Gitee。
+//     跑之前确认这台机器上没有别的活依赖它。
 //
 // 参数：--batch（一批几篇，默认 20，与 `MAX_BLOB_BATCH` 一致）、--concurrency（批内并发，
 // 默认 6，与 `BLOB_CONCURRENCY` 一致）、--gap（批间隔毫秒，默认 4000）、--limit（最多取
@@ -56,6 +65,12 @@ const CONCURRENCY = Math.max(1, num('concurrency', 6));
 const GAP = num('gap', 4000);
 const LIMIT = num('limit', 0) || Infinity;
 const MAX_REQUESTS = num('max-requests', 0) || Infinity;
+
+// 加压模式：逐档往上抬「每分钟多少个请求」，撞到 403 就停。默认档位 60 → 960。
+const RAMP = opt('ramp', false) === true;
+const STAGE_SECONDS = Math.max(5, num('stage-seconds', 60));
+const LADDER = String(opt('ladder', '60,120,240,480,960'))
+  .split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
 
 /* ---------- 小工具 ---------- */
 
@@ -144,7 +159,8 @@ async function hit(path, { timeout = 30000 } = {}) {
 
 /* ---------- 主流程 ---------- */
 
-async function main() {
+/** 读配置、验令牌、拿整棵树。两种模式共用这一段。 */
+async function prepare() {
   const vars = parseVars(await readFile(VARS_FILE, 'utf8'));
   const { GITEE_TOKEN, GITEE_OWNER, GITEE_REPO } = vars;
   const missing = [
@@ -157,13 +173,10 @@ async function main() {
   token = GITEE_TOKEN;
   const repo = `/repos/${GITEE_OWNER}/${GITEE_REPO}`;
 
-  say(`开始：${stamp()}`);
-  say(`节奏：一批 ${BATCH} 篇、批内并发 ${CONCURRENCY}、批间隔 ${GAP}ms、上限 ${LIMIT === Infinity ? '全库' : LIMIT + ' 篇'}`);
-
   const ip = await exitIpMasked();
   say(`出口 IP（遮蔽）：${ip}`);
 
-  // 预热：3 个请求拿到整棵树。这一步也顺便验证令牌对不对
+  // 预热：4 个请求拿到整棵树。这一步也顺便验证令牌对不对（错了就别往下撞）
   const t0 = Date.now();
   const repoInfo = await hit(repo);
   if (repoInfo.kind !== 'ok') {
@@ -187,6 +200,154 @@ async function main() {
   }
   const notes = t.body.tree.filter((n) => n && n.type === 'blob' && /\.md$/i.test(n.path || ''));
   say(`清单：${t.body.tree.length} 个文件，其中 .md ${notes.length} 篇（预热 ${Date.now() - t0}ms，${counts.req} 个请求）`);
+  return { repo, notes, ip };
+}
+
+/** 撞墙之后量恢复：每分钟轻探一次，直到回 200 或等够了 */
+async function waitRecovery(repo, probeSha) {
+  say(`从这里开始每分钟轻探一次（1 个请求），等它自己解除……`);
+  const blockWall = Date.now();
+  while (Date.now() - blockWall < RECOVERY_MAX_MS) {
+    await sleep(RECOVERY_POLL_MS);
+    const r = await hit(`${repo}/git/blobs/${encodeURIComponent(probeSha)}`);
+    const waited = Math.round((Date.now() - blockWall) / 1000);
+    if (r.kind === 'ok') {
+      say(`  ${waited}s 后恢复（HTTP ${r.status}）`);
+      return { seconds: waited, at: now() };
+    }
+    say(`  ${waited}s 仍未恢复（HTTP ${r.status}）`);
+  }
+  say(`  等了 ${RECOVERY_MAX_MS / 60000} 分钟仍未恢复，放弃等待。`);
+  return null;
+}
+
+async function writeReport(lines, wall) {
+  const reportPath = join(OUT_DIR, `upstream-rate-${wall.toISOString().replace(/[:.]/g, '-')}.md`);
+  await mkdir(OUT_DIR, { recursive: true });
+  await writeFile(reportPath, lines.join('\n') + '\n', 'utf8');
+  process.stdout.write(`\n成绩单写到：${reportPath}\n`);
+}
+
+/**
+ * 加压模式：把「每分钟多少个请求」一档一档往上抬，撞到第一次 403 就收手。
+ *
+ * 为什么按「每分钟多少个」加压，而不是「一共发了多少个」：上游那边是按出口 IP 的速率
+ * 掐的（2026-10-02 那次是猛冲，几十秒内发了 600 多个），而我们的生产节奏是匀速的
+ * （一批 20、间隔 4 秒）。两个轴不同，能对打到生产上的是「速率」。
+ *
+ * 每档都从池子里轮着取 sha——同一篇反复取，撞的是「请求太密」，与取的是哪一篇无关；
+ * 轮着用只是别让它被当成缓存命中（真被缓存了，量的就不是上游了）。
+ */
+async function rampMain() {
+  const { repo, notes, ip } = await prepare();
+  const pool = notes.filter((n) => n && n.sha).slice(0, Math.min(200, notes.length));
+  if (!pool.length) {
+    console.error('仓库里没有可取的 blob，没法加压。');
+    process.exit(2);
+  }
+  say(`加压档位：${LADDER.join(' → ')} 次/分钟，每档 ${STAGE_SECONDS}s，批内并发 ${CONCURRENCY}，池子 ${pool.length} 篇`);
+  say(`开始：${stamp()}`);
+
+  const stages = [];
+  const startedAt = Date.now();
+  let blockedAt = null;
+  let stop = false;
+  let cursor = 0;
+
+  for (const rate of LADDER) {
+    if (stop) break;
+    const interval = 60000 / rate;
+    const stageStart = Date.now();
+    let nextAt = stageStart;        // 均匀铺开的节奏：谁先到谁发
+    let sSent = 0, sOk = 0, sFail = 0;
+    say(`\n档位 ${rate} 次/分钟（每 ${interval.toFixed(0)}ms 一个）…`);
+
+    const worker = async () => {
+      while (!stop && Date.now() - stageStart < STAGE_SECONDS * 1000) {
+        if (counts.req >= MAX_REQUESTS) { stop = true; break; }
+        const now0 = Date.now();
+        const wait = Math.max(0, nextAt - now0);
+        // 排到的这一格若已经超出本档的截止时间，就别占了——否则几个并发会把
+        // 未来好几秒的格子先预订掉，低速率档会被拖长（实测过一次：5 秒的档跑了 16 秒）
+        if (now0 + wait - stageStart >= STAGE_SECONDS * 1000) break;
+        nextAt = Math.max(now0, nextAt) + interval;
+        if (wait) await sleep(wait);
+        if (stop) break;
+        const f = pool[cursor++ % pool.length];
+        sSent += 1;
+        const r = await hit(`${repo}/git/blobs/${encodeURIComponent(f.sha)}`);
+        if (r.kind === 'ok') { sOk += 1; continue; }
+        if (r.kind === 'blocked') {
+          stop = true;
+          // 同一档里有几个在飞：只记第一个撞上的
+          if (!blockedAt) {
+            blockedAt = {
+              at: now(), elapsed: Date.now() - startedAt, nth: counts.req,
+              rate, stageSent: sSent, isHtml: r.isHtml,
+            };
+          }
+          return;
+        }
+        sFail += 1;
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, 64) }, worker));
+    stages.push({ rate, sent: sSent, ok: sOk, fail: sFail, ms: Date.now() - stageStart });
+    say(`  发出 ${sSent} 个：成功 ${sOk}、失败 ${sFail}`);
+    if (blockedAt && blockedAt.rate === rate) break;
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  let recovered = null;
+  if (blockedAt) {
+    say('');
+    say(`⚠ 撞墙：${blockedAt.rate} 次/分钟这一档、该档发出第 ${blockedAt.stageSent} 个时被拦` +
+      `（回的是${blockedAt.isHtml ? '一整页 HTML，像 WAF 拦截页' : '错误体，不像 WAF'}）。`);
+    recovered = await waitRecovery(repo, pool[0].sha);
+  }
+
+  /* ---------- 成绩单 ---------- */
+
+  const wall = now();
+  const lines = [];
+  const P = (s) => { lines.push(s); process.stdout.write(s + '\n'); };
+  const topRate = stages.length ? stages[stages.length - 1].rate : 0;
+
+  P('');
+  P('## 上游限流加压实测（#38 · ramp）');
+  P('');
+  P(`- 时间：${stamp(startedAt)} → ${stamp(wall)}`);
+  P(`- 出口 IP（遮蔽）：${ip}`);
+  P(`- 档位：${LADDER.join(' → ')} 次/分钟，每档 ${STAGE_SECONDS}s，批内并发 ${CONCURRENCY}`);
+  P('');
+  if (blockedAt) {
+    P(`- **开始被拦的档位：${blockedAt.rate} 次/分钟**（这一档发出第 ${blockedAt.stageSent} 个时撞上）`);
+    P(`- 累计：从开跑算，${elapsedMs / 1000 < 1 ? '不到 1' : (blockedAt.elapsed / 1000).toFixed(1)}s 内发出了 ${blockedAt.nth} 个请求（含预热）`);
+    P(`- 拦截形态：${blockedAt.isHtml ? '一整页 HTML（WAF 拦截页），不是接口错误体' : '错误体（不是 HTML）'}`);
+    P(`- 恢复：${recovered ? '约 ' + (recovered.seconds / 60).toFixed(1) + ' 分钟后（' + recovered.seconds + 's）' : '未在 ' + RECOVERY_MAX_MS / 60000 + ' 分钟内恢复'}`);
+    const safeRate = blockedAt.rate === LADDER[0] ? 0 : LADDER[Math.max(0, LADDER.indexOf(blockedAt.rate) - 1)];
+    P(`- 也就是说：**${safeRate} 次/分钟这一档是撑得住的**（整档跑完没触发），${blockedAt.rate} 会触发`);
+  } else {
+    P(`- 结果：**跑完 ${LADDER.length} 档，零 403**（最高撑到 ${topRate} 次/分钟）`);
+    P(`- 累计：${(elapsedMs / 1000).toFixed(1)}s，${counts.req} 个请求`);
+  }
+  P(`- 请求合计：${counts.req} 个（成功 ${counts.ok}、被拦 ${counts.blocked}、其它失败 ${counts.failed}）`);
+  P('');
+  P('各档位：');
+  P('');
+  P('| 计划速率 | 发出 | 成功 | 失败 | 用时 |');
+  P('|---|---|---|---|---|');
+  for (const s of stages) P(`| ${s.rate} 次/分钟 | ${s.sent} | ${s.ok} | ${s.fail} | ${(s.ms / 1000).toFixed(1)}s |`);
+
+  await writeReport(lines, wall);
+}
+
+async function main() {
+  if (RAMP) return rampMain();
+  const { repo, notes, ip } = await prepare();
+  say(`开始：${stamp()}`);
+  say(`节奏：一批 ${BATCH} 篇、批内并发 ${CONCURRENCY}、批间隔 ${GAP}ms、上限 ${LIMIT === Infinity ? '全库' : LIMIT + ' 篇'}`);
 
   const todo = notes.slice(0, LIMIT === Infinity ? notes.length : Math.min(LIMIT, notes.length));
   say(`这一趟取 ${todo.length} 篇`);
@@ -245,21 +406,7 @@ async function main() {
     say('');
     say(`⚠ 撞墙：第 ${blockedAt.nth} 个请求（第 ${blockedAt.done + 1} 篇，${blockedAt.path}）被拦` +
       `（回的是${blockedAt.isHtml ? '一整页 HTML，像 WAF 拦截页' : '错误体，不像 WAF'}）。`);
-    say(`从这里开始每分钟轻探一次（1 个请求），等它自己解除……`);
-    const blockWall = Date.now();
-    const probeSha = todo[Math.min(blockedAt.done, todo.length - 1)].sha;
-    while (Date.now() - blockWall < RECOVERY_MAX_MS) {
-      await sleep(RECOVERY_POLL_MS);
-      const r = await hit(`${repo}/git/blobs/${encodeURIComponent(probeSha)}`);
-      const waited = Math.round((Date.now() - blockWall) / 1000);
-      if (r.kind === 'ok') {
-        recovered = { seconds: waited, at: now() };
-        say(`  ${waited}s 后恢复（HTTP ${r.status}）`);
-        break;
-      }
-      say(`  ${waited}s 仍未恢复（HTTP ${r.status}）`);
-    }
-    if (!recovered) say(`  等了 ${RECOVERY_MAX_MS / 60000} 分钟仍未恢复，放弃等待。`);
+    recovered = await waitRecovery(repo, todo[Math.min(blockedAt.done, todo.length - 1)].sha);
   }
 
   /* ---------- 成绩单 ---------- */
@@ -304,11 +451,7 @@ async function main() {
   P('|---|---|---|---|---|');
   for (const b2 of batches) P(`| ${b2.i} | ${b2.n} | ${b2.ok} | ${b2.fail} | ${b2.ms}ms |`);
 
-  const reportPath = join(OUT_DIR, `upstream-rate-${wall.toISOString().replace(/[:.]/g, '-')}.md`);
-  await mkdir(OUT_DIR, { recursive: true });
-  await writeFile(reportPath, lines.join('\n') + '\n', 'utf8');
-  P('');
-  P(`成绩单写到：${reportPath}`);
+  await writeReport(lines, wall);
 }
 
 main().catch((e) => {
