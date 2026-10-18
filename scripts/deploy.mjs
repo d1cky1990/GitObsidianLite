@@ -912,6 +912,8 @@ export function wranglerFailureStop(r, headline) {
         '加上名字重跑：node scripts/deploy.mjs --subdomain 你的名字（小写字母/数字/横线，注册后就是 名字.workers.dev）',
         '或者先去控制台设一次：Workers & Pages → 右栏 Your subdomain → Change，然后重跑',
         '也可以手动跑：cd server && npx wrangler subdomain 你的名字',
+        '控制台明明看得到子域、它却还在问：多半是令牌指向的账号不对——两个账号各有一份 Workers，地址不互通',
+        '   那种情况设 CLOUDFLARE_ACCOUNT_ID 指向有子域的那个账号，或者换成那个账号的令牌',
       ],
     });
   }
