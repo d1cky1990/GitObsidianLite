@@ -38,7 +38,7 @@ const treeOf = (map) =>
   Object.entries(map).map(([path, sha]) => ({ path, type: 'blob', sha, mode: '100644' }));
 
 /** 起一个同步器：remote 是 {path: 内容}，指纹由 shaOf 算出来 */
-function harness({ local = [], remote = {}, capBytes = 20 * 1024 * 1024, batchSize = 25, break_ = [] } = {}) {
+function harness({ local = [], remote = {}, capBytes = 20 * 1024 * 1024, batchSize = 20, break_ = [] } = {}) {
   const store = fakeStore(local);
   const remoteMap = {};
   for (const [path, content] of Object.entries(remote)) remoteMap[path] = shaOf(content);
@@ -182,6 +182,34 @@ test('分批：一批的大小按 batchSize 走（断点续传的粒度就是它
   });
   await sync.sync();
   assert.deepEqual(asked, [['a.md', 'b.md'], ['c.md', 'd.md'], ['e.md']]);
+});
+
+// 默认值不是随便定的：服务端 `/api/blobs` 一批最多 **20** 篇（由 Cloudflare「单次调用
+// 50 个外发请求」倒推，见 server/src/core.js 的 MAX_BLOB_BATCH）。默认值一旦超过它，
+// 每一批都会被 400 掉，而客户端会把它当成「请求没发出去」，整趟同步停在第一批——
+// 表现是「搜正文永远备不完」，但单测全绿。所以这条得拿**默认值**真跑一遍、数批大小。
+test('默认 batchSize 不超过服务端一批的上限', async () => {
+  // 注意：这里**不经过 harness**——harness 自己会给 batchSize 兜一个值，
+  // 那样测到的就不是 createBodySync 的默认值了。
+  const store = fakeStore();
+  const asked = [];
+  const shas = {};
+  for (let i = 0; i < 21; i++) shas[`n${String(i).padStart(2, '0')}.md`] = `sha-c${i}`;
+  const sync = createBodySync({
+    store,
+    loadTree: async () => ({ head: 'h1', tree: treeOf(shas) }),
+    fetchBlobs: async (files) => {
+      asked.push(files.map((f) => f.path));
+      return { blobs: files.map((f) => ({ ...f, content: 'x' })), failed: [] };
+    },
+    getCapBytes: () => 1e9,
+    batchGapMs: 0,
+  });
+  await sync.sync();
+  assert.equal(asked.flat().length, 21);
+  for (const batch of asked) {
+    assert.ok(batch.length <= 20, `一批发了 ${batch.length} 篇，服务端会 400（上限 20）`);
+  }
 });
 
 test('整批一篇都没拿到：停在这一趟，不接着撞上游', async () => {

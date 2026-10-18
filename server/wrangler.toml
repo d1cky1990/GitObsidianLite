@@ -1,9 +1,40 @@
 name = "obsidian-sync-server"
 main = "src/index.js"
+# 静态资源绑定对 compatibility_date 没有要求（2026-10-18 查 wrangler 配置文档，
+# Assets 一节无此约束；装着的 wrangler 3.114 起这个配置也不告警）。所以这一行**不动**——
+# 抬它只会顺带改掉别的运行时行为，而这一票不需要。
 compatibility_date = "2024-11-01"
 
 # Gitee 仓库配置。GITEE_TOKEN 是机密，不要写在这里，
 # 本地开发放到 .dev.vars（参考 .dev.vars.example），线上用 wrangler secret 配置。
+#
+# 这四项（含 APP_PASSWORD）都由 handler 第二个参数 `env` 直接给：`wrangler dev` 从
+# `.dev.vars` 读、线上从平台变量读，名字就是 `env.GITEE_TOKEN` 这种。别把 Deno 入口
+# 那套 `Deno.env.get` 带过来，也别在入口里包一层同名函数叫 `env()`——名字一样不代表
+# 同一件事，而那种「看起来还叫 env」的写法会让下一处排错查到完全不同的地方。
 [vars]
 GITEE_OWNER = ""
 GITEE_REPO = ""
+
+# 前端与 API 同一个端口（#40）：`web/dist` 作为静态资源目录，交给 Workers 自带的
+# 静态资源绑定伺服。所以起服务前要先 `cd web && npm run build`——`web/dist` 被
+# .gitignore 排除，目录不存在时 wrangler 直接报错，而不是给个空白页。
+#
+# 请求顺序（实测，2026-10-18）：**静态资源优先**，命中文件就由平台直接回，worker 根本
+# 不会被调用；没命中才进 worker（`src/index.js` 在那里接 `/api/*`，其余交给下面这个
+# 绑定）。所以 `/api/*` 能进 worker 靠的是「`web/dist` 里没有 `/api` 这个路径」，
+# **别往 `web/public/` 里放任何叫 `api` 的东西**——放了接口就被静态资源挡在门外，
+# 而且是以 404 页面的形式出现，错误信息里一个字都不会提到路由。
+#
+# 缓存头：**没有照抄 Deno 入口那份手写注释**（index.html 不缓存、带 hash 的产物缓存
+# 一天）。实测这个绑定的默认行为是 `Cache-Control: public, max-age=0, must-revalidate`
+# ＋每个文件一个 `ETag`，带 `If-None-Match` 再来一次回 304。也就是说：发版立刻生效
+# （index.html 每次都要跟服务器核对一遍），没变的产物也只花一次条件请求、不重下。
+# 这正是想要的，所以不另加 `_headers` 去覆盖它。
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+# 前端是 hash 路由，不需要 history fallback。`single-page-application` 那种「什么都回
+# index.html」会让拼错的路径看起来像首页；`none` = 没有对应文件就如实 404（实测：
+# 换成 SPA 兜底后 /nope 会回 452 字节的 index.html，改回 none 就回到空 404）。
+not_found_handling = "none"

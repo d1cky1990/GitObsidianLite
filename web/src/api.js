@@ -64,6 +64,8 @@ export const rawUrl = (path) => `/api/raw?path=${encodeURIComponent(path)}`;
 // （失败的落在 `failed` 里）。
 //
 // 一次别贪多：分批是给断点续传留的粒度，取到一篇就存一篇，关页面最多丢最后这一批。
+// 一批最多 20 篇（服务端限制，见 `server/src/core.js` 的 MAX_BLOB_BATCH），分几批由
+// 调用方决定——`note-sync.js` 的 batchSize 必须 ≤ 这个数。
 export const fetchBlobs = (files) =>
   api('/api/blobs', {
     method: 'POST',
