@@ -598,14 +598,33 @@ function step(n) {
   say(`▸ ${n}/${TOTAL} ${STEPS[n - 1]}`);
 }
 
+/**
+ * 拆命令行参数。`--subdomain 名字` 与 `--subdomain=名字` 都认——
+ * 这个名字是「workers.dev 子域」，注册完全球唯一，只能由人给，脚本不编。
+ * @param {string[]} argv
+ * @returns {{flags: Set<string>, values: {subdomain?: string}}}
+ */
+export function parseArgs(argv) {
+  const flags = new Set();
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--subdomain' || a === '-s') { values.subdomain = argv[++i]; continue; }
+    if (a.startsWith('--subdomain=')) { values.subdomain = a.slice('--subdomain='.length); continue; }
+    if (a.startsWith('-')) flags.add(a);
+  }
+  return { flags, values };
+}
+
 async function main(argv) {
-  const flags = new Set(argv.filter((a) => a.startsWith('-')));
+  const { flags, values: options } = parseArgs(argv);
   if (flags.has('--help') || flags.has('-h')) {
     printHelp();
     return 0;
   }
   const dryRun = flags.has('--dry-run');
   const wantCreateRepo = flags.has('--create-repo');
+  const subdomain = options.subdomain;
 
   say(`仓库根  ${ROOT}`);
   say(`配置    ${CONFIG_REL}`);
@@ -745,7 +764,25 @@ async function main(argv) {
   }
   say(`   ${plan.vars.join(' / ')}  ✓ 跟着部署命令走，不落平台状态`);
 
-  const deploy = await wranglerRun(['deploy', ...deployVarArgs(values)], { echo: true });
+  let deploy = await wranglerRun(['deploy', ...deployVarArgs(values)], { echo: true });
+
+  // 账号还没注册 workers.dev 子域时，wrangler 会问「要不要现在注册」，非交互下取 no
+  // 然后不等你救它——代码传上去了，却一个地址都拿不到。这个名字全球唯一、只能人选，
+  // 所以脚本不替人编，只在他给了 `--subdomain` 时替他注册，再重试一次部署。
+  if (deploy.code !== 0 && needsSubdomain(`${deploy.out}\n${deploy.err}`) && subdomain) {
+    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(subdomain)) {
+      throw new Stop({
+        step: 5,
+        headline: `--subdomain 给的名字不像话：${subdomain}`,
+        detail: ['子域只能是 2~63 位小写字母、数字、横线，且以字母或数字开头'],
+        hint: ['像这样重跑：node scripts/deploy.mjs --subdomain 你的名字'],
+      });
+    }
+    say(`   这个账号还没有 workers.dev 子域，先注册成 ${subdomain}（每个账号一次）`);
+    const reg = await wranglerRun(['subdomain', subdomain], { echo: true });
+    if (reg.code !== 0) throw wranglerFailureStop(reg, `注册子域 ${subdomain} 没成`);
+    deploy = await wranglerRun(['deploy', ...deployVarArgs(values)], { echo: true });
+  }
   if (deploy.code !== 0) throw wranglerFailureStop(deploy, '部署没成');
 
   const url = parseWorkersUrl(`${deploy.out}\n${deploy.err}`);
@@ -841,6 +878,11 @@ async function main(argv) {
 }
 
 /** 部署侧（wrangler）失败：按它报的话分三种最常见的卡点，认不出的就原样给最后几行 */
+/** 输出里有没有出现「要不要注册 workers.dev 子域」这个问句 */
+export function needsSubdomain(text) {
+  return /workers\.dev subdomain/i.test(String(text));
+}
+
 /**
  * 部署侧（wrangler）失败：认得出就点名，认不出就原样交回最后几行。
  *
@@ -854,6 +896,25 @@ async function main(argv) {
 export function wranglerFailureStop(r, headline) {
   const text = `${r.err}\n${r.out}`;
   const tail = text.split(/\r?\n/).filter((l) => l.trim()).slice(-8);
+
+  // 也来自真跑一次（2026-10-18 第二次）：账号没注册过 workers.dev 子域，
+  // wrangler 会问一句「要不要现在注册」，非交互下取 no 就收工。这件事的现象是
+  // 「代码传上去了、却没有地址」，特别容易被读成「部署失败」。
+  if (needsSubdomain(text)) {
+    return new Stop({
+      step: 5,
+      headline: `${headline}：这个账号还没有 workers.dev 子域（每个账号只注册一次）`,
+      detail: [
+        '代码已经传上去了，缺的只是给它一个地址——没有子域，Worker 起来也没有网址',
+        '它在等一个人回答「要不要现在注册」，而这个名字全球唯一，得由你选，脚本不编',
+      ],
+      hint: [
+        '加上名字重跑：node scripts/deploy.mjs --subdomain 你的名字（小写字母/数字/横线，注册后就是 名字.workers.dev）',
+        '或者先去控制台设一次：Workers & Pages → 右栏 Your subdomain → Change，然后重跑',
+        '也可以手动跑：cd server && npx wrangler subdomain 你的名字',
+      ],
+    });
+  }
 
   // 这一条必须在「令牌不被认」之前，否则会被那句 Authentication failed 抢走
   if (/\/memberships|9106/.test(text)) {
@@ -910,11 +971,12 @@ export function wranglerFailureStop(r, headline) {
 
 function printHelp() {
   say('');
-  say('用法：node scripts/deploy.mjs [--dry-run | --create-repo | --help]');
+  say('用法：node scripts/deploy.mjs [--dry-run | --create-repo | --subdomain 名字 | --help]');
   say('');
   say('  （不带参数）     读配置 → 自检 → 构建前端 → 推变量 → 部署 → 确认线上');
   say('  --dry-run       只做到「试打包」为止：不推变量、不上传、不确认');
   say('  --create-repo   仓库不存在时，替你在自己账号下建一个私有仓，并放一篇示例笔记');
+  say('  --subdomain X   Cloudflare 账号还没注册 workers.dev 子域时，用这个名字注册（每个账号一次）');
   say('  --help          这一屏');
   say('');
   say(`配置只有一处：${CONFIG_REL}（四项：${[...REQUIRED_KEYS, ...OPTIONAL_KEYS].join(' / ')}）`);

@@ -22,6 +22,7 @@ import {
   giteeFailureMessage,
   classifyRuntime,
   wranglerFailureStop,
+  parseArgs,
   CONFIG_REL,
   SAMPLE_NOTE,
   SAMPLE_NOTE_PATH,
@@ -215,7 +216,40 @@ test('确认：404 说明这个地址上不是应用本身，而不是「应用�
   assert.equal(r.kind, 'unreachable');
 });
 
+/* ---------------- 命令行参数 ---------------- */
+
+test('parseArgs：`--subdomain 名字` 与 `--subdomain=名字` 都认', () => {
+  assert.deepEqual(parseArgs(['--dry-run', '--subdomain', 'd1cky']), {
+    flags: new Set(['--dry-run']),
+    values: { subdomain: 'd1cky' },
+  });
+  assert.deepEqual(parseArgs(['--subdomain=note1']).values, { subdomain: 'note1' });
+  assert.deepEqual(parseArgs([]).values, {});
+});
+
 /* ---------------- 部署侧失败（wrangler 自己报的） ---------------- */
+
+/** 真实输出，2026-10-18 用户第二次部署时原样撞出来的 */
+const SUBDOMAIN_PROMPT = {
+  code: 1,
+  out: [
+    'Total Upload: 12.85 KiB / gzip: 4.12 KiB',
+    'Uploaded obsidian-sync-server (11.30 sec)',
+    '? Would you like to register a workers.dev subdomain now?',
+    '🤖 Using fallback value in non-interactive context: no',
+  ].join('\n'),
+  err: '',
+};
+
+test('没注册 workers.dev 子域：说的是「代码传上去了，缺个地址」，不是「部署失败」', () => {
+  const stop = wranglerFailureStop(SUBDOMAIN_PROMPT, '部署没成');
+  assert.match(stop.info.headline, /workers\.dev 子域/);
+  assert.match(stop.info.detail.join(' '), /代码已经传上去了/);
+  const hints = stop.info.hint.join(' ');
+  assert.match(hints, /--subdomain/, '要给出脚本自己的那条路');
+  assert.match(hints, /wrangler subdomain|Your subdomain/, '也要给手动那条');
+});
+
 
 /** 真实输出，2026-10-18 用户首次部署时原样撞出来的 */
 const MEMBERSHIPS_FAILURE = {
