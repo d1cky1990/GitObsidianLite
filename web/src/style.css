@@ -224,6 +224,12 @@ a { color: inherit; text-decoration: none; }
 }
 .foot button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .foot button:active { opacity: 0.8; }
+/* 忙态：按钮在做事，不是没反应。阅读态点「编辑」要读一次最新版（#34），
+   这一下约一秒——不置灰的话用户会以为点空了，再点一次 */
+.foot button[disabled] { opacity: 0.55; cursor: default; }
+/* 但主按钮别淡过头：白字配浅蓝会过不了对比度，字得看得清——所以只淡一点点，
+   真要说「我在忙」靠文案（「读取中…」）本身 */
+.foot button.primary[disabled] { opacity: 0.85; }
 
 .center { padding: 40px; text-align: center; color: var(--muted); }
 .dim { color: var(--muted); }

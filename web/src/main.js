@@ -838,6 +838,9 @@ const state = {
   undo: null, // { path, content, dir } —— 撤销删除要用的原稿
   openInEdit: null, // 新建之后要直接进编辑态的那条路径
 
+  // ---- 进编辑态之前那次远端核对（#34） ----
+  editChecking: false, // 正在读最新版，按钮显示忙态；也当连点锁
+
   // ---- 搜索与设置（#33） ----
   query: '', // 搜索框里的词（空 = 正常翻目录）
   online: null, // null = 还没问过；true / false = 那次很轻的版本身份请求的结果
@@ -941,6 +944,49 @@ async function save() {
     else toast(e.conflict ? '保存冲突：远端已被改动' : e.message);
   }
   state.busy = false; render();
+}
+
+/**
+ * 点「编辑」：进编辑态之前先核一次远端（#34，票 04 定过、实现时漏了）。
+ *
+ * 为什么要在这一步核：打开一篇时拿到的正文与版本号是**那一刻**的。手机端「低频查看、
+ * 隔一会儿才编辑」是常态——中间 PC 改了仓库，用户对着旧正文改十分钟，直到点保存才在
+ * 冲突界面发现。后端 409 兜得住数据，但那十分钟白干了。
+ *
+ * 为什么不给「仍编辑旧版」：这一刻用户还没落笔，换成最新的**不会覆盖任何人的输入**——
+ * 这是整个方案能成立的前提。别把这段挪到「已经打过字之后」。
+ *
+ * 核不动**不挡人**：读失败照常进编辑态、正文与版本号保持手上那份。保存那一步的 409
+ * 本来就兜得住，锁住编辑只是把用户关在门外。
+ */
+async function startEdit() {
+  if (state.editChecking) return;              // 连点别发两次请求
+  const path = state.path, sha = state.file.sha;
+  state.editChecking = true; render();
+
+  let fresh = null, err = null;
+  try { fresh = await readFile(path); } catch (e) { err = e; }
+  state.editChecking = false;
+
+  // 读的这段时间里换了篇 / 退出了这一屏：这次核对的结果没有归属，丢掉。
+  // （丢了也要把忙态清掉，否则回到阅读态时按钮永远停在「读取中…」）
+  if (state.view !== 'editor' || state.path !== path || state.mode !== 'read') { render(); return; }
+
+  if (err) {
+    state.mode = 'edit'; render();
+    // 要密码时弹窗已经在说话了，别在它背后再喊一句「没连上」
+    if (err.auth) return;
+    toast(err.notFound
+      ? '这篇在远端已经不在了，先按手上这份改；保存时会再核一次'
+      : '没连上，先按手上这份改；保存时再核一次');
+    return;
+  }
+
+  // 版本号必须**同步换掉**：不换的话下一次保存必然 409，把一条本来不存在的冲突报给用户
+  const changed = fresh.sha !== sha;
+  if (changed) { state.file = fresh; state.draft = fresh.content; }
+  state.mode = 'edit'; render();
+  if (changed) toast('远端已更新，已自动加载最新内容');
 }
 
 function enterConflict(remote) {
@@ -1565,8 +1611,12 @@ function renderEditor() {
     ? '<article class="md">' + md.render(state.file.content, { notePath: state.path }) + '</article>'
     : '<textarea class="editor" id="editor">' + esc(state.draft) + '</textarea>';
 
+  // 阅读态的「编辑」不再是瞬切：它要先读一次最新版（#34）。这一下约一秒，
+  // 所以按钮得有忙态——一个点了没反应的按钮，用户会再点一次或以为坏了。
   const actions = state.mode === 'read'
-    ? '<button class="primary" id="edit-btn">编辑</button>'
+    ? (state.editChecking
+      ? '<button class="primary" id="edit-btn" disabled>读取中…</button>'
+      : '<button class="primary" id="edit-btn">编辑</button>')
     : '<button id="cancel-btn">取消</button><button class="primary" id="save-btn">保存</button>';
 
   // 笔记页右上角也有「⋯」，内容与目录页相同。编辑态下按钮**不 disable**——
@@ -1587,7 +1637,7 @@ function renderEditor() {
     ta.addEventListener('input', () => { state.draft = ta.value; });
   }
   const eb = document.getElementById('edit-btn');
-  if (eb) eb.addEventListener('click', () => { state.mode = 'edit'; render(); });
+  if (eb) eb.addEventListener('click', startEdit);
   const cb = document.getElementById('cancel-btn');
   if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; state.mode = 'read'; render(); });
   const sb = document.getElementById('save-btn');
