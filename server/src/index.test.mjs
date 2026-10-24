@@ -36,14 +36,14 @@ function fakeAssets() {
 
 // 缺凭据的 env：API 走到 requireEnv 就停，不会真的打上游——测路由不必联网。
 // 有假凭据的 env 用来测「路径本身存在、但谁都没匹配上」的那种 404（`/api`）。
-const ENV_FAKE_CREDS = { GITEE_TOKEN: 't', GITEE_OWNER: 'o', GITEE_REPO: 'r' };
+const ENV_FAKE_CREDS = { REPO_PROVIDER: 'gitee', REPO_TOKEN: 't', REPO_OWNER: 'o', REPO_REPO: 'r' };
 
 test('/api/* 进 worker，不碰静态资源', async () => {
   const assets = fakeAssets();
   const resp = await worker.fetch(new Request('http://x/api/head'), { ASSETS: assets });
   assert.equal(resp.status, 500);                       // 缺凭据 → core 的「未配置」错误
   const body = await resp.json();
-  assert.match(body.error, /未配置 GITEE_TOKEN/);
+  assert.match(body.error, /未配置 REPO_PROVIDER/);
   assert.deepEqual(assets.seen, []);                    // 一次都没问过静态资源
 });
 
@@ -107,4 +107,48 @@ test('构建产物里没有 api 这个路径（有的话接口会被静态资源
   // auto-trailing-slash 下 `/api` 会找 `api`、`api.html`、`api/index.html` 三种
   const hits = readdirSync(dist).filter((n) => /^api(\.html)?$/i.test(n));
   assert.deepEqual(hits, [], `web/dist 里出现了 ${hits.join('、')}，会把 /api/* 挡在门外`);
+});
+
+/* ---------------- 配置（#36 改名之后的报错） ---------------- */
+
+// 这几条守的是「改名之后人还能自己走出来」：报错要是只说「未配置」，三个名字的对应
+// 关系就得人去猜；而猜错的方向通常是「令牌坏了」，于是会白白重建一次令牌。
+
+test('只配旧变量名：逐条点名旧名 → 新名，并说要加 REPO_PROVIDER', async () => {
+  const resp = await worker.fetch(new Request('http://x/api/head'), {
+    GITEE_TOKEN: 't', GITEE_OWNER: 'o', GITEE_REPO: 'r',
+  });
+  assert.equal(resp.status, 500);
+  const { error } = await resp.json();
+  assert.match(error, /GITEE_TOKEN → REPO_TOKEN/);
+  assert.match(error, /GITEE_OWNER → REPO_OWNER/);
+  assert.match(error, /GITEE_REPO → REPO_REPO/);
+  assert.match(error, /REPO_PROVIDER/);
+});
+
+test('新旧名字都配了：按新名字跑，不拿旧名字拦人', async () => {
+  // 旧键还躺在 .dev.vars 里只是没删，不该让一个配好了的部署起不来
+  const env = { GITEE_TOKEN: 'stale', ...ENV_FAKE_CREDS };
+  const resp = await worker.fetch(new Request('http://x/api'), env);
+  assert.equal(resp.status, 404);
+  assert.deepEqual(await resp.json(), { error: 'not found' });
+});
+
+test('REPO_PROVIDER 缺了也要说可选值（不能只说「未配置」）', async () => {
+  const resp = await worker.fetch(new Request('http://x/api/head'), {
+    REPO_TOKEN: 't', REPO_OWNER: 'o', REPO_REPO: 'r',
+  });
+  assert.equal(resp.status, 500);
+  assert.match((await resp.json()).error, /gitee 或 github/);
+});
+
+test('REPO_PROVIDER 取值非法：说出可选值', async () => {
+  const resp = await worker.fetch(new Request('http://x/api/head'), {
+    ...ENV_FAKE_CREDS,
+    REPO_PROVIDER: 'gitlab',
+  });
+  assert.equal(resp.status, 500);
+  const { error } = await resp.json();
+  assert.match(error, /gitee 或 github/);
+  assert.match(error, /gitlab/);
 });

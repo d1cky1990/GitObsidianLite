@@ -1,12 +1,13 @@
 # Obsidian 移动端轻量同步 Web 应用
 
-手机浏览器访问的轻量应用，通过 Gitee API 按需拉取 / 编辑笔记并提交，替代手机端 obsidian-git 的整库拉取。
+手机浏览器访问的轻量应用，通过**仓库平台的 API**（Gitee 或 GitHub，一份部署只连一家）按需拉取 / 编辑笔记并提交，替代手机端 obsidian-git 的整库拉取。
 
 ## 目录
 
-- `server/src/core.js` — 平台无关 API 核心（藏 token、解 CORS，代理 Gitee API v5）
+- `server/src/core.js` — 平台无关 API 核心（藏 token、解 CORS、UTF-8 编解码）；**不认识任何一家仓库平台**
+- `server/src/providers/` — 仓库平台适配层：`gitee.js` / `github.js` 各一份，两家的鉴权、端点与错误码只住在各自的文件里
 - `server/src/index.js` — Cloudflare Workers 入口：`/api/*` 交给 core，其余交给静态资源（**线上与本地都走它**）
-- `server/wrangler.toml` — Worker 配置：入口、静态资源目录（`web/dist`）、两个普通变量
+- `server/wrangler.toml` — Worker 配置：入口、静态资源目录（`web/dist`）、普通变量
 - `web/` — 前端（Vite + 原生 JS + markdown-it）
 - `scripts/` — 仓库工具：一条命令的部署（`deploy.mjs`）、提交前凭据检查、hook 安装
 - `docs/guide/` — 要你本人点网页的那几步（注册账号、生成令牌）；截图位置已留好，图待补
@@ -16,7 +17,7 @@
 
 前置：Node 22。
 
-1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填入 Gitee 私人令牌、owner、仓库名。**这份文件同时是部署用的那一份配置**，只有一处（见「部署上线」）。
+1. 配置后端凭据：复制 `server/.dev.vars.example` 为 `server/.dev.vars`，填 `REPO_PROVIDER`（`gitee` 或 `github`）、令牌、owner、仓库名。**这份文件同时是部署用的那一份配置**，只有一处（见「部署上线」）。
 2. 起后端：`cd server && npm install && npm run dev`（默认 `http://localhost:8787`）。
 3. 起前端：`cd web && npm install && npm run dev`（默认 `http://localhost:5173`，`/api` 已代理到后端）。
 4. 想验证**线上形态**（前后端同进程伺服）：先 `cd web && npm run build`，再 `cd server && npm run dev` 并打开 `http://localhost:8787`。线上就是这么跑的——`web/dist` 在 `wrangler.toml` 里被当作静态资源目录。
@@ -28,11 +29,12 @@
 ## 测试
 
 ```sh
+cd server && npm test                  # 后端：路由分工、配置报错、两家的适配层与接口面（打桩 fetch，不联网）
 cd web && npm test                     # 前端：双链 / 引用解析等纯函数
-node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则
+node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则、部署脚本的说话方式
 ```
 
-两边都是 `node --test`，没有额外测试框架。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`、`web/src/note-sync.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
+三处都是 `node --test`，没有额外测试框架。后端那两个新测试文件（`server/src/providers/providers.test.mjs`、`server/src/core.test.mjs`）**不联网**：把 `fetch` 换成桩，断言的是「发出去的 URL / 方法 / body」与「回来的状态码变成哪个词」。真平台的响应另外实测（见下面「只存在于屏幕上的那些行为」）。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`、`web/src/note-sync.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
 
 **要改「首次备正文」的节奏，先跑量它的工具**：`node scripts/probe-upstream-rate.mjs`（`--limit 5` 冒烟）。它按客户端那套节奏直接打 Gitee 的 `git/blobs`，撞到第一次 403 就停、只量恢复时间，成绩单写到 `.scratch/`。上一轮的数字与结论住在 `docs/design/obsidian-mobile-web/spec.md` §4——**别凭「首次太慢」就往下调**，上游是按出口 IP 一刀切的，撞上了是整台机器二十分钟用不了（[#38](https://github.com/d1cky1990/GitObsidianLite/issues/38)）。
 
@@ -77,7 +79,7 @@ node scripts/check-secrets.mjs --status   # 未启用时退出码为 1
 
 也支持手工跑：不带参数检查暂存内容（与 hook 同一入口），`--all` 检查所有可能被提交的文件（含未跟踪、不含被忽略的）。
 
-**误报怎么办**——这层能否成立只看一件事：会不会被人主动 `--no-verify` 掉。一个误报频繁的 hook 等于没装，而且更糟：它会让人以为有防护。所以规则只拦「看起来像真值」的，文档里光出现 `GITEE_TOKEN` 这类字样不算。
+**误报怎么办**——这层能否成立只看一件事：会不会被人主动 `--no-verify` 掉。一个误报频繁的 hook 等于没装，而且更糟：它会让人以为有防护。所以规则只拦「看起来像真值」的，文档里光出现 `REPO_TOKEN` 这类字样不算。
 
 - 误报：该行任意位置加 `secret-scan:allow`，或把占位值改成一眼假的（`your-token`、`你的令牌`）
 - 真泄漏：从改动里拿掉，改放 `server/.dev.vars`（已被 `server/.gitignore` 排除）
@@ -112,7 +114,9 @@ node scripts/deploy.mjs
 
 这两件事都要你**本人登录后点网页**，截图与逐步说明在 [`docs/guide/manual-steps.md`](docs/guide/manual-steps.md)。本节只写本机要做什么。
 
-**配置只有一处**：`server/.dev.vars`（从 `.dev.vars.example` 复制）。三项必填——`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`，加一个可选的 `APP_PASSWORD`。本地开发和部署读的是同一份，脚本**只挑这几项**推上去，文件里多出来的键一律不推。
+**配置只有一处**：`server/.dev.vars`（从 `.dev.vars.example` 复制）。四项必填——`REPO_PROVIDER`（`gitee` 或 `github`，**没有默认值**）/ `REPO_TOKEN` / `REPO_OWNER` / `REPO_REPO`，加一个可选的 `APP_PASSWORD`。本地开发和部署读的是同一份，脚本**只挑这几项**推上去，文件里多出来的键一律不推。
+
+> **旧变量名（`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`）已经不再认**：硬切、没有静默回落。配着旧名字跑，服务端与部署脚本都会**逐条点名**该改成哪个新名。理由见 [#17 §4](https://github.com/d1cky1990/GitObsidianLite/issues/17)——「兼容 + 提示」在这套形态里只剩两条出路：退化成静默，或者破掉「前端零改动」。
 
 **部署令牌不进这个文件**：它只在本机环境变量里。那份文件会被整份读进应用进程（`wrangler dev` 直接读它），把不属于应用的东西放进去，等于顺手交出去。
 
@@ -122,14 +126,14 @@ node scripts/deploy.mjs
 |---|---|---|
 | 1 | 读 `server/.dev.vars` | 点名缺哪一项、该去哪补 |
 | 2 | 查 `CLOUDFLARE_API_TOKEN` | 点名令牌没设，附去哪生成 |
-| 3 | **自检**（本机 → gitee.com）：令牌活否 / 仓库在否 / 有没有写权限 / 默认分支读不读得到 | 配置类点名改哪一项；网络类说重跑一次 |
+| 3 | **自检**（本机 → 仓库平台）：令牌活否 / 仓库在否 / 有没有写权限 / 默认分支读不读得到 | 配置类点名改哪一项；网络类说重跑一次 |
 | 4 | 构建前端（`web/dist`；缺依赖时先 `npm install`） | 给最后几行输出与手动复现的命令 |
-| 5 | 推机密（`GITEE_TOKEN`，设了密码再加 `APP_PASSWORD`）→ `wrangler deploy`（owner 与仓库名跟着这条命令走） | 认得出就点名：令牌不认 / 账号不止一个 / 没连上 |
-| 6 | **确认**（Cloudflare → gitee.com）：打一次线上地址、读一次仓库最新版本 | 分清「没部署成功」与「部署成功但连不上仓库」 |
+| 5 | 推机密（`REPO_TOKEN`，设了密码再加 `APP_PASSWORD`）→ `wrangler deploy`（供应商 / owner / 仓库名跟着这条命令走） | 认得出就点名：令牌不认 / 账号不止一个 / 没连上 |
+| 6 | **确认**（Cloudflare → 仓库平台）：打一次线上地址、读一次仓库最新版本 | 分清「没部署成功」与「部署成功但连不上仓库」 |
 
-第 3 步放在开头不是随手排的：它走「本机 → gitee.com」，五秒出结果。放在构建之后才停，就白等几分钟。
+第 3 步放在开头不是随手排的：它走「本机 → 仓库平台」，五秒出结果。放在构建之后才停，就白等几分钟。
 
-第 6 步不能省，因为它走的是**另一条网络路**——「Cloudflare → gitee.com」。本机自检全过，不等于线上够得到仓库；这两句话说的不是一件事。
+第 6 步不能省，因为它走的是**另一条网络路**——「Cloudflare → 仓库平台」。本机自检全过，不等于线上够得到仓库；这两句话说的不是一件事。
 
 **幂等**：Workers 没有「建应用」这一步，`wrangler deploy` 第一次跑就把 Worker 建出来。紧接着再跑一次只是重新构建、重新上传，机密已存在就改值。
 
@@ -174,15 +178,15 @@ node scripts/deploy.mjs --dry-run
 
 `APP_PASSWORD`（可选）：设了之后所有 `/api` 请求要带 `X-Auth` 头，前端输一次存 localStorage。**不设就完全不鉴权**——靠「地址不公开 + 免费档没人枚举」兜底，地址一旦泄漏即等同无保护。
 
-### GitHub 那条路（旁路，不是主路径）
+### 连 GitHub 当笔记仓库（另一种供应商）
 
-本项目的应用只对接 Gitee：`server/src/core.js` 里写的全是对 Gitee API v5 的调用。把**笔记仓库**换成 GitHub 这条路**现在不通**，它缺的是一层适配，不是改个名字。
+**现在走通了**：`REPO_PROVIDER = "github"`，适配层在 `server/src/providers/github.js`。两家对前端是同一套接口，形态与取舍定在 [#17](https://github.com/d1cky1990/GitObsidianLite/issues/17)，实现见 [#36](https://github.com/d1cky1990/GitObsidianLite/issues/36)。
 
-- **要求能连上 `github.com`**。这个域名在大陆不挂梯子实测不通，而 `api.github.com` 通——所以「接口回得正常」不能当作「这条路能用」：注册、生成令牌、首次授权都要过 `github.com` 那一步。
-- **令牌范围不一样**：GitHub 勾 `repo`，Gitee 勾 `projects`。
-- **仓库名写法一样**（`owner/repo`），但接口路径、错误体措辞、以及「一个 400 混着好几种错」的那套脾气全不同——见下面「Gitee 写操作的脾气」，那几条按措辞判定的规则在 GitHub 上一条都不成立，得重写一遍。
-
-给本来就把**代码**放在 GitHub 的人：代码放哪都行（本仓库自己的 issue 就在 GitHub 上）。但应用读写的那个**笔记仓库**目前只能是 Gitee。
+- **配置阶段要梯子一次**。`github.com`（网页、生成令牌、首次授权）在大陆不挂梯子实测不通，而 `api.github.com` 通——所以「接口回得正常」不能当作「配置这一步不用梯子」。**运行时不需要**：调用是服务端发起的，跑在云上。
+- **令牌用细粒度 PAT**：只授权这个仓库的 Contents: read and write（最小权限）；经典令牌勾 `repo` 也能用，但权限更大。Gitee 那边勾的是 `projects`。
+- **一份部署只连一个仓库**。想同时用 Gitee 和 GitHub 的两个笔记仓，部署两份——「前端每次请求带仓库标识」会推翻「owner / repo 固定在后端」这条安全线，代价不值。
+- **搜索两边都走客户端正文索引**，不用 GitHub 自带的代码搜索：换供应商不该换搜索体验，而它（仅默认分支、单文件 < 384 KB、10 次/分钟）并不更好。
+- 两家的脾气差异（冲突、撞名、不存在的路径、删除参数位置）**全在适配层里吸收**，前端一个字不改——具体那张表见 [#17 §2](https://github.com/d1cky1990/GitObsidianLite/issues/17)，下面「写操作的脾气」只登记实测到的长相。
 
 ## 后端 API
 
@@ -197,27 +201,41 @@ node scripts/deploy.mjs --dry-run
 | POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤20）。单条失败只报单条 |
 | GET | `/api/raw?path=` | 图片 / 附件 raw |
 
-`server/src/core.js` 是这一面的唯一出处；改接口先看它。
+这一面**与连哪一家无关**：`server/src/core.js` 是这一面的唯一出处，两家的差异在 `server/src/providers/` 里吸收；改接口先看 core。
 
-### Gitee 写操作的脾气（2026-09-21 在真仓库实测，别再靠猜）
+### 写操作的脾气（只能实测得来，别再靠猜）
 
-这几条都是状态码看不出来、只能实测得来的。踩过一次就会以「功能死活不对」的样子出现，所以留在这里：
+这几条都是状态码看不出来、只能实测得来的。踩过一次就会以「功能死活不对」的样子出现，所以留在这里。**两家的长相不同，但都在适配层里吸收成同一句回答**（`server/src/providers/`，形态见 [#17 §2](https://github.com/d1cky1990/GitObsidianLite/issues/17)）。
+
+**Gitee 侧（2026-09-21 在真仓库实测）**：
 
 - **新建与更新是两个端点。** `PUT contents` 的 `sha` 是必填（缺了回 `400 {"messages":["sha is missing","sha is empty"]}`），**新建走 `POST contents`**（无 sha，成功 201）。服务端按「body 里有没有 sha」自己选路，浏览器不必知道。
 - **`400` 被三种情况共用**：缺 sha / 内容为空 / sha 对不上。**不能只看状态码**，要按措辞判——认错一个，「远端被改过」会被说成「参数不对」，而一件要用户去合并、一件是本端 bug。
-- **写冲突是 `400`，不是 409**：`{"message":"Blob SHA does not match"}`，且远端内容不会被覆盖。本服务端识别后统一回 409。
+- **写冲突是 `400`，不是 409**：`{"message":"Blob SHA does not match"}`，且远端内容不会被覆盖。适配层识别后统一回 409。
 - **同名新建由 Gitee 挡下**：`400 {"message":"文件名已存在"}`，原文件不动。重名检查不用自己做第一道。
 - **不存在的路径回 `200 + []`**（文件和目录都是），不是 404。拿状态码判存在性会全判错，只能看 body 是不是数组。
 - **空内容建不出来**：`400 {"messages":["content is empty"]}`。「建一篇空笔记」写的是一个换行。
 - **往还不存在的目录里建文件不用先建目录**：Gitee 顺着路径把目录带出来（201，随后 GET 就能列到）。git 里本来也没有目录这个东西。
 - **`DELETE contents` 的参数在 query**（`sha` + `message`），不像 `PUT` 走 body；成功回 `200`，但 **`content` 是 `null`**——别去取 `content.sha`。
 
+**GitHub 侧（按 REST API 2022-11-28 的规约实现，2026-10-24）**：
+
+- **写冲突是 `409`**（不是 400）。这条最不能漏：漏判成普通失败，冲突合并界面永远不出现，用户会以为改动丢了。
+- **新建与更新是同一个 `PUT`**，靠带不带 `sha` 区分；**新建撞名回 `422`**（`Invalid request. "sha" wasn't supplied.`，或 `errors[].code = already_exists`）→ 归一成「这个名字已经有了」。422 也可能是路径不合法，所以只认措辞，不认号码。
+- **不存在的路径回 `404`**（Gitee 是 `200 + []`）——同一个意思，两家两个长相，适配层归一。
+- **删除的参数在 body**（Gitee 在 query），成功回一个新 commit；前端只看 `{deleted:true}`。
+- **鉴权走 `Authorization: Bearer` 头**，令牌不进 URL；**必须带 `User-Agent`**，缺了直接 403，而报错里不会说「缺 UA」。
+- **附件回来时 `Content-Type` 是笼统的 `application/vnd.github.raw`**，连 PNG 也是（2026-10-24 实测）。原样交给浏览器，图片会当场裂开，而报错里一个字都不会提到它——所以适配层按扩展名补一次。
+- **空内容按规约能建出来**（Gitee 明确不能）。应用层统一「至少写一个换行」，所以两边最终行为一致；这一条没有对真仓库实测——不需要，因为它不构成分叉。
+
 ## 自行部署须知
 
-这是一个 **self-hosted 单用户**应用，不提供公共实例：clone 后填自己的 Gitee 令牌部署即可，数据始终在自己的仓库里。
+这是一个 **self-hosted 单用户**应用，不提供公共实例：clone 后填自己的仓库令牌部署即可，数据始终在自己的仓库里。
 
 前置条件：
-- 一个 Gitee 账号 + 一个存放笔记的仓库（公开私有都行，令牌需 `projects` 权限）
+- **一个仓库平台账号 + 一个存放笔记的仓库**，二选一：
+  - Gitee（公开私有都行，令牌需 `projects` 权限）
+  - GitHub（令牌用细粒度 PAT，只授权该仓库的 Contents: read/write；**配置阶段要梯子一次**）
 - 一台能跑 Node 22 的机器（构建前端、跑那条部署命令都要它）
 - 一个 Cloudflare 账号 + 一个 API 令牌（见「部署上线」与[图文指引](docs/guide/manual-steps.md)）
 - **访问方式**：`*.workers.dev` 在国内长期不稳，日常打开大概要挂着梯子。这是选这个平台时明确接受的代价（[#39](https://github.com/d1cky1990/GitObsidianLite/issues/39)），不是配置没调好

@@ -5,16 +5,19 @@ main = "src/index.js"
 # 抬它只会顺带改掉别的运行时行为，而这一票不需要。
 compatibility_date = "2024-11-01"
 
-# Gitee 仓库配置。GITEE_TOKEN 是机密，不要写在这里，
+# 仓库配置（不认厂商的中性名，#36）。REPO_TOKEN 是机密，不要写在这里，
 # 本地开发放到 .dev.vars（参考 .dev.vars.example），线上用 wrangler secret 配置。
 #
-# 这四项（含 APP_PASSWORD）都由 handler 第二个参数 `env` 直接给：`wrangler dev` 从
-# `.dev.vars` 读、线上从平台变量读，名字就是 `env.GITEE_TOKEN` 这种。别在入口里自己
+# 这几个（含 APP_PASSWORD）都由 handler 第二个参数 `env` 直接给：`wrangler dev` 从
+# `.dev.vars` 读、线上从平台变量读，名字就是 `env.REPO_TOKEN` 这种。别在入口里自己
 # 读一遍环境、再包一层同名函数叫 `env()`——名字一样不代表同一件事，而那种「看起来
 # 还叫 env」的写法会让下一处排错查到完全不同的地方。
+#
+# REPO_PROVIDER 决定连 Gitee 还是 GitHub（`gitee` / `github`，**没有默认值**）。
 [vars]
-GITEE_OWNER = ""
-GITEE_REPO = ""
+REPO_PROVIDER = ""
+REPO_OWNER = ""
+REPO_REPO = ""
 
 # 前端与 API 同一个端口（#40）：`web/dist` 作为静态资源目录，交给 Workers 自带的
 # 静态资源绑定伺服。所以起服务前要先 `cd web && npm run build`——`web/dist` 被

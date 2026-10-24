@@ -3,9 +3,9 @@
 // 把原来散在人手底下的几步压成一条：读配置 → 查部署令牌 → 自检 → 构建前端 →
 // 推变量 → 部署 → 确认。顺序不是随手排的：
 //
-//   · **自检必须在开头。** 它走的是「本机 → gitee.com」这条路，五秒出结果；
+//   · **自检必须在开头。** 它走的是「本机 → 仓库平台（Gitee / GitHub）」这条路，五秒出结果；
 //     放在构建之后才停，就白等几分钟。这也是「失败一律停下」这条能成立的前提。
-//   · **末尾那次确认不能省。** 它走的是「Cloudflare → gitee.com」这条路，与开头
+//   · **末尾那次确认不能省。** 它走的是「Cloudflare → 仓库平台」这条路，与开头
 //     那次不是同一条网络路（#18 的分法）：本机自检全过，不等于线上够得到仓库。
 //
 // 失败一律停下，不留强行部署的开关。话分两种，这不是语气差别：
@@ -24,6 +24,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { LEGACY_ENV, OPTIONAL_ENV, PROVIDER_NAMES, REQUIRED_ENV } from '../server/src/env-names.js';
+import { BASE as GITEE_BASE } from '../server/src/providers/gitee.js';
+import { BASE as GITHUB_BASE } from '../server/src/providers/github.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_DIR = path.join(ROOT, 'server');
@@ -31,14 +34,38 @@ const WEB_DIR = path.join(ROOT, 'web');
 
 /** 唯一一份配置。相对仓库根，报错时也用它说话 */
 export const CONFIG_REL = 'server/.dev.vars';
-/** 应用自己要用的三项——缺一项应用就起不来 */
-export const REQUIRED_KEYS = ['GITEE_TOKEN', 'GITEE_OWNER', 'GITEE_REPO'];
+/**
+ * 配置项的名字**从服务端那一份取**，不在这里另写一份：应用说缺 A、脚本说缺 B 是最难查的
+ * 一类错（`server/src/env-names.js`）。
+ */
+export const REQUIRED_KEYS = REQUIRED_ENV;
 /** 可选：设了才启用访问密码 */
-export const OPTIONAL_KEYS = ['APP_PASSWORD'];
+export const OPTIONAL_KEYS = OPTIONAL_ENV;
+/** 能连的仓库平台 */
+export const PROVIDERS = PROVIDER_NAMES;
+/** 旧名字 → 新名字（#36 硬切）：检测到旧名还在用就逐条点名 */
+export const LEGACY_KEYS = LEGACY_ENV;
 /** 部署令牌：只在本机环境变量里，**不进配置文件、也不推给平台** */
 export const DEPLOY_TOKEN_ENV = 'CLOUDFLARE_API_TOKEN'; // secret-scan:allow —— 这是变量名，不是值
 
-const GITEE_API = 'https://gitee.com/api/v5';
+/**
+ * 各家的接口根与它要的那套鉴权。接口根**取自适配层**（同一件事只写一处）；
+ * 这里只管自检要用的诊断信息（怎么称呼它、权限字段叫什么）。
+ */
+const PROVIDER_HTTP = {
+  gitee: {
+    label: 'Gitee',
+    base: GITEE_BASE,
+    host: 'gitee.com',
+    permissionField: 'permission',
+  },
+  github: {
+    label: 'GitHub',
+    base: GITHUB_BASE,
+    host: 'api.github.com',
+    permissionField: 'permissions',
+  },
+};
 const UA = 'obsidian-mobile-web/1.0 (deploy script)';
 const IS_WIN = process.platform === 'win32';
 const NPM = IS_WIN ? 'npm.cmd' : 'npm';
@@ -115,6 +142,31 @@ export function missingConfigKeys(parsed) {
   return REQUIRED_KEYS.filter((key) => isPlaceholder(parsed[key]));
 }
 
+/**
+ * 旧名字还在用的那几项（旧名有值、对应的新名没值）。
+ * 只报「真的靠旧名在跑」的那些：新旧都配着的人只是没删旧行，不该被拦下来。
+ * @param {Record<string, string>} parsed
+ * @returns {string[]} 形如 `GITEE_TOKEN → REPO_TOKEN`
+ */
+export function legacyKeyReport(parsed) {
+  return Object.entries(LEGACY_KEYS)
+    .filter(([oldName, newName]) => parsed[oldName] && !parsed[newName])
+    .map(([oldName, newName]) => `${oldName} → ${newName}`);
+}
+
+/**
+ * `REPO_PROVIDER` 有没有问题。**它没有默认值**：默认成 Gitee 的话，配了 GitHub 令牌
+ * 却忘写连哪家的人会拿到一个指向 Gitee、报「令牌无效」的错误，排查方向被带向错的地方。
+ * @param {Record<string, string>} parsed
+ * @returns {string|null}
+ */
+export function providerProblem(parsed) {
+  const v = String(parsed.REPO_PROVIDER ?? '').trim();
+  if (!v) return 'REPO_PROVIDER 没配——它没有默认值，得自己写连哪一家';
+  if (!PROVIDERS.includes(v)) return `REPO_PROVIDER 只能是 ${PROVIDERS.join(' 或 ')}，现在是「${v}」`;
+  return null;
+}
+
 /** 配置里多出来的键——不推，但要提一句，因为其中可能有部署令牌 */
 export function unknownConfigKeys(parsed) {
   return Object.keys(parsed).filter((k) => !REQUIRED_KEYS.includes(k) && !OPTIONAL_KEYS.includes(k));
@@ -134,16 +186,16 @@ export function dropPlaceholderPassword(parsed) {
 
 /**
  * 该推哪几项、各走哪条路。
- * **机密走 secret、其余走 var**：GITEE_TOKEN 与 APP_PASSWORD 是机密，平台的 secret
- * 接口不让读回明文；owner / repo 是普通变量，走 `--var` 就在部署命令里，不留状态。
+ * **机密走 secret、其余走 var**：令牌与访问密码是机密，平台的 secret 接口不让读回明文；
+ * 供应商 / owner / 仓库名是普通变量，走 `--var` 就在部署命令里，不留状态。
  * 除这几项之外**一个字都不推**——配置文件里躺着别的键，也不能顺手带走。
  * @param {Record<string, string>} values
  * @returns {{secrets: string[], vars: string[]}}
  */
 export function pushPlan(values) {
   return {
-    secrets: ['GITEE_TOKEN', ...(values.APP_PASSWORD ? ['APP_PASSWORD'] : [])],
-    vars: ['GITEE_OWNER', 'GITEE_REPO'],
+    secrets: ['REPO_TOKEN', ...(values.APP_PASSWORD ? ['APP_PASSWORD'] : [])],
+    vars: ['REPO_PROVIDER', 'REPO_OWNER', 'REPO_REPO'],
   };
 }
 
@@ -154,7 +206,11 @@ export function pushPlan(values) {
  * @param {Record<string, string>} values
  */
 export function deployVarArgs(values) {
-  return ['--var', `GITEE_OWNER:${values.GITEE_OWNER}`, '--var', `GITEE_REPO:${values.GITEE_REPO}`];
+  return [
+    '--var', `REPO_PROVIDER:${values.REPO_PROVIDER}`,
+    '--var', `REPO_OWNER:${values.REPO_OWNER}`,
+    '--var', `REPO_REPO:${values.REPO_REPO}`,
+  ];
 }
 
 /**
@@ -178,16 +234,17 @@ export function parseWorkersUrl(text) {
  * 把人指到错的地方去。
  *
  * 返回值里 `kind` 决定最后一句：`config` = 去改配置，`network` = 再试一次。
- * @param {{what: 'token'|'repo'|'branch'|'write', status?: number, body?: unknown, network?: string}} e
+ * @param {{provider?: 'gitee'|'github', what: 'token'|'repo'|'branch'|'write', status?: number, body?: unknown, network?: string}} e
  * @returns {{kind: 'config'|'network', message: string, hint: string[]}}
  */
-export function giteeFailureMessage({ what, status, body, network }) {
+export function providerFailureMessage({ provider = 'gitee', what, status, body, network }) {
+  const p = PROVIDER_HTTP[provider] || PROVIDER_HTTP.gitee;
   const upstream = messageOf(body);
 
   if (network || status === 0) {
     return {
       kind: 'network',
-      message: `连不上 gitee.com${network ? `（${network}）` : ''}`,
+      message: `连不上 ${p.host}${network ? `（${network}）` : ''}`,
       hint: ['这项没测出来，多半是网络，重跑一次：node scripts/deploy.mjs'],
     };
   }
@@ -196,17 +253,23 @@ export function giteeFailureMessage({ what, status, body, network }) {
     if (status === 401 || status === 403) {
       return {
         kind: 'config',
-        message: 'GITEE_TOKEN 被 Gitee 拒了（令牌无效、过期，或者被吊销了）',
-        hint: [
-          '去 Gitee 重新生成一个：设置 → 私人令牌，勾上 projects',
-          `把新值填回 ${CONFIG_REL} 的 GITEE_TOKEN`,
-        ],
+        message: `REPO_TOKEN 被 ${p.label} 拒了（令牌无效、过期，或者被吊销了）`,
+        hint: provider === 'github'
+          ? [
+            '去 GitHub 重新生成一个：Settings → Developer settings → Personal access tokens → Fine-grained tokens',
+            '只授权这个仓库的 Contents: read and write 就够（最小权限）；经典令牌要勾 repo',
+            `把新值填回 ${CONFIG_REL} 的 REPO_TOKEN`,
+          ]
+          : [
+            '去 Gitee 重新生成一个：设置 → 私人令牌，勾上 projects',
+            `把新值填回 ${CONFIG_REL} 的 REPO_TOKEN`,
+          ],
       };
     }
     return {
       kind: 'network',
-      message: `Gitee 回了 ${status}${upstream ? `（${upstream}）` : ''}，不是「令牌不对」该有的样子`,
-      hint: ['这项没测出来，可能是 Gitee 自己出问题了，过一会儿重跑一次'],
+      message: `${p.label} 回了 ${status}${upstream ? `（${upstream}）` : ''}，不是「令牌不对」该有的样子`,
+      hint: [`这项没测出来，可能是 ${p.label} 自己出问题了，过一会儿重跑一次`],
     };
   }
 
@@ -216,8 +279,10 @@ export function giteeFailureMessage({ what, status, body, network }) {
         kind: 'config',
         message: '仓库不存在，或者这个令牌看不见它',
         hint: [
-          `核对 ${CONFIG_REL} 里的 GITEE_OWNER 与 GITEE_REPO——名字大小写要和 Gitee 上完全一致`,
-          '私有仓库还要令牌有 projects 权限（Gitee 的私人令牌页面能勾）',
+          `核对 ${CONFIG_REL} 里的 REPO_OWNER 与 REPO_REPO——名字大小写要和 ${p.label} 上完全一致`,
+          provider === 'github'
+            ? '私有仓库还要令牌被授权到这个仓库（细粒度令牌要单独勾选仓库）'
+            : '私有仓库还要令牌有 projects 权限（Gitee 的私人令牌页面能勾）',
           '仓库确实还没建的话，加 --create-repo 让脚本替你建一个私有仓',
         ],
       };
@@ -226,13 +291,17 @@ export function giteeFailureMessage({ what, status, body, network }) {
       return {
         kind: 'config',
         message: '这个令牌读不了这个仓库（被拒了）',
-        hint: ['令牌要勾 projects 权限，然后用的是自己的令牌：Gitee 设置 → 私人令牌'],
+        hint: [
+          provider === 'github'
+            ? '细粒度令牌要在 Repository access 里勾上这个仓库，权限给 Contents: read'
+            : '令牌要勾 projects 权限，然后用的是自己的令牌：Gitee 设置 → 私人令牌',
+        ],
       };
     }
     return {
       kind: 'network',
-      message: `读仓库时 Gitee 回了 ${status}${upstream ? `（${upstream}）` : ''}`,
-      hint: ['这项没测出来，多半是网络或 Gitee 自己出错，重跑一次'],
+      message: `读仓库时 ${p.label} 回了 ${status}${upstream ? `（${upstream}）` : ''}`,
+      hint: [`这项没测出来，多半是网络或 ${p.label} 自己出错，重跑一次`],
     };
   }
 
@@ -249,7 +318,7 @@ export function giteeFailureMessage({ what, status, body, network }) {
     }
     return {
       kind: 'network',
-      message: `读默认分支时 Gitee 回了 ${status}${upstream ? `（${upstream}）` : ''}`,
+      message: `读默认分支时 ${p.label} 回了 ${status}${upstream ? `（${upstream}）` : ''}`,
       hint: ['这项没测出来，多半是网络，重跑一次'],
     };
   }
@@ -259,8 +328,10 @@ export function giteeFailureMessage({ what, status, body, network }) {
     kind: 'config',
     message: '这个令牌能读这个仓库，但没有写权限（提交会失败）',
     hint: [
-      'Gitee → 设置 → 私人令牌 → 重新生成，勾上 projects',
-      '如果这个仓库是别人的，需要对方把你加成开发者',
+      provider === 'github'
+        ? '细粒度令牌要改成 Contents: read and write（经典令牌勾 repo）'
+        : 'Gitee → 设置 → 私人令牌 → 重新生成，勾上 projects',
+      '如果这个仓库是别人的，需要对方把你加成开发者 / collaborator',
     ],
   };
 }
@@ -391,22 +462,35 @@ function printStop(info) {
   bad('没有继续往下走——部署出来也只会是个用不了的东西。');
 }
 
-/* ---------------- 网络：Gitee 与线上应用 ---------------- */
+/* ---------------- 网络：仓库平台与线上应用 ---------------- */
 
 /**
- * 打一次 Gitee。网络层失败（连不上、超时）用 `status: 0` + `network` 交回，
- * HTTP 层失败原样交回状态码与错误体——**怎么解释交给上层的 `giteeFailureMessage`**，
+ * 打一次仓库平台。两家的鉴权形态在这里分完（Gitee 查询串 / GitHub Bearer 头），
+ * 上层只面对「状态码 + 错误体」。
+ *
+ * 网络层失败（连不上、超时）用 `status: 0` + `network` 交回，HTTP 层失败原样交回
+ * 状态码与错误体——**怎么解释交给上层的 `providerFailureMessage`**，
  * 因为同一个状态码在不同项上意思不同。
  * @returns {Promise<{status:number, body:any, network?:string}>}
  */
-async function giteeRequest(pathname, { token, method = 'GET', payload, timeout = 15000 } = {}) {
-  const sep = pathname.includes('?') ? '&' : '?';
-  const url = `${GITEE_API}${pathname}${sep}access_token=${encodeURIComponent(token)}`;
+async function providerRequest(provider, pathname, { token, method = 'GET', payload, timeout = 15000 } = {}) {
+  const p = PROVIDER_HTTP[provider] || PROVIDER_HTTP.gitee;
   const init = {
     method,
     headers: { 'User-Agent': UA, Accept: 'application/json' },
     signal: AbortSignal.timeout(timeout),
   };
+
+  let url;
+  if (provider === 'github') {
+    url = `${p.base}${pathname}`;
+    init.headers.Authorization = `Bearer ${token}`;
+    init.headers['X-GitHub-Api-Version'] = '2022-11-28';
+  } else {
+    const sep = pathname.includes('?') ? '&' : '?';
+    url = `${p.base}${pathname}${sep}access_token=${encodeURIComponent(token)}`;
+  }
+
   if (payload !== undefined) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(payload);
@@ -431,23 +515,26 @@ function networkText(e) {
   return cause ? `${e.message}：${cause}` : e.message || String(e);
 }
 
-/* ---------------- 自检（本机 → gitee.com） ---------------- */
+/* ---------------- 自检（本机 → 仓库平台） ---------------- */
 
 /**
  * 四项检查，全部是**只读**的：令牌活否 / 仓库在否且看得见 / 有没有写权限 / 默认分支读不读得到。
  * 第三项不做真写入——仓库信息接口自带「调用者对本仓的写权限」，读它即可，
  * 不在别人的仓库里留垃圾。
+ *
+ * 两家在这四项上问的是同一批问题，只是**权限字段的名字不同**（Gitee `permission`、
+ * GitHub `permissions`），所以只差一行取值。
  * @returns {Promise<{login:string, repo:any, branch:string, sha:string}>}
  */
 async function selfCheck(values, { onLine }) {
-  const { GITEE_TOKEN: token } = values;
-  const owner = values.GITEE_OWNER;
-  const repo = values.GITEE_REPO;
+  // 解构取值（不写成 `const token = values.REPO_TOKEN`）：那样写会被提交前的凭据检查
+  // 当成「token 被赋了一个像真值的字面量」拦下来——它认形状，认不出右边是个变量
+  const { REPO_PROVIDER: provider, REPO_TOKEN: token, REPO_OWNER: owner, REPO_REPO: repo } = values;
 
   /** 点名到这里为止：哪一项、什么话、去哪改。`reason` 给上层判断，别让上层去比文案 */
   let login = '';
   const stop = (what, r) => {
-    const msg = giteeFailureMessage({ what, status: r.status, body: r.body, network: r.network });
+    const msg = providerFailureMessage({ provider, what, status: r.status, body: r.body, network: r.network });
     throw new Stop({
       step: 3,
       reason: what === 'repo' && r.status === 404 ? 'repo-missing' : `${what}-failed`,
@@ -459,27 +546,29 @@ async function selfCheck(values, { onLine }) {
   };
 
   // ① 令牌活否
-  const me = await giteeRequest('/user', { token });
+  const me = await providerRequest(provider, '/user', { token });
   if (me.status < 200 || me.status >= 300) stop('token', me);
   login = me.body.login || '';
   onLine(`令牌     ✓ 有效（${login || '已通过'}）`);
 
   // ② 仓库在否、看不看得见
-  const repoInfo = await giteeRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { token });
+  const repoInfo = await providerRequest(provider, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { token });
   if (repoInfo.status < 200 || repoInfo.status >= 300) stop('repo', repoInfo);
   const privacy = repoInfo.body.private ? '私有' : '公开';
   onLine(`仓库     ✓ ${owner}/${repo}（${privacy}）`);
 
   // ③ 写权限（读字段，不写东西）
-  const perm = repoInfo.body.permission || {};
+  const permissionField = PROVIDER_HTTP[provider].permissionField;
+  const perm = repoInfo.body[permissionField] || {};
   if (perm.push === false) stop('write', { status: 200, body: repoInfo.body });
   // 字段缺失时**不当作通过**，也不因此停下：说的是「没读到」，让人自己心里有数。
   // 把「没读到」说成「有权限」是这一层最坏的一种谎。
   onLine(perm.push ? '写权限   ✓ 可以提交' : '写权限   ? 没读到权限字段，没法确认（可能提交时才失败）');
 
-  // ④ 默认分支读不读得到
-  const branch = repoInfo.body.default_branch || 'master';
-  const head = await giteeRequest(
+  // ④ 默认分支读不读得到（两家都是 /branches/{name}，回执里都有 commit.sha）
+  const branch = repoInfo.body.default_branch || (provider === 'github' ? 'main' : 'master');
+  const head = await providerRequest(
+    provider,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}`,
     { token }
   );
@@ -492,15 +581,24 @@ async function selfCheck(values, { onLine }) {
 
 /* ---------------- 可选：替用户建仓 ---------------- */
 
+/** 「这个名字被占了」在两家是不同的号码：Gitee 400 + 措辞，GitHub 422 + errors[].code */
+export function isNameTaken(provider, { status, body }) {
+  if (provider === 'github') {
+    const codes = (body && Array.isArray(body.errors) ? body.errors : [])
+      .map((e) => (e && (e.code || e.message)) || '').join(' ');
+    return status === 422 && /already exists|already_exists|name already exists/i.test(`${messageOf(body)} ${codes}`);
+  }
+  return status === 400 && /已存在|already exists/i.test(messageOf(body));
+}
+
 /**
  * 仓库不存在时，替用户建一个私有仓，并在根目录放一篇示例笔记。
  * 只在这个仓库**刚被建出来、还是空的**时候写东西——不在已有仓库里落任何文件。
  * 重名一律停下：自动加后缀会凭空多出一个仓，人自己都找不到。
  */
 async function createRepo(values, login) {
-  const { GITEE_TOKEN: token } = values;
-  const owner = values.GITEE_OWNER;
-  const repo = values.GITEE_REPO;
+  const { REPO_PROVIDER: provider, REPO_TOKEN: token, REPO_OWNER: owner, REPO_REPO: repo } = values;
+  const p = PROVIDER_HTTP[provider];
 
   if (owner.toLowerCase() !== String(login).toLowerCase()) {
     throw new Stop({
@@ -508,41 +606,42 @@ async function createRepo(values, login) {
       headline: `仓库还没建，但 owner（${owner}）不是这个令牌的账号（${login}）`,
       detail: ['脚本只能在自己的账号下建仓，不能替别人建'],
       hint: [
-        `把 ${CONFIG_REL} 的 GITEE_OWNER 改成 ${login}（或者你自己先在网页上把仓库建好）`,
+        `把 ${CONFIG_REL} 的 REPO_OWNER 改成 ${login}（或者你自己先在网页上把仓库建好）`,
       ],
     });
   }
 
   say(`   仓库还没建，建一个私有仓并放一篇示例笔记（${SAMPLE_NOTE_PATH}）`);
-  const created = await giteeRequest('/user/repos', {
+  const created = await providerRequest(provider, '/user/repos', {
     token,
     method: 'POST',
     payload: { name: repo, private: true, auto_init: true, description: '手机端笔记（GitObsidianLite）' },
     timeout: 20000,
   });
-  if (created.status === 400 && /已存在|already exists/i.test(messageOf(created.body))) {
+  if (isNameTaken(provider, created)) {
     throw new Stop({
       step: 3,
       headline: `「${repo}」这个名字已经被占了`,
       detail: ['脚本不会自动加后缀——那样会凭空多出一个仓，你自己都找不到'],
-      hint: [`换一个名字，改 ${CONFIG_REL} 里的 GITEE_REPO`],
+      hint: [`换一个名字，改 ${CONFIG_REL} 里的 REPO_REPO`],
     });
   }
   if (created.status < 200 || created.status >= 300) {
     throw new Stop({
       step: 3,
-      headline: `建仓没成（Gitee 回了 ${created.status}${created.network ? `：${created.network}` : ''}）`,
-      detail: [messageOf(created.body) || '（Gitee 没给错误体，也没有别的线索）'],
+      headline: `建仓没成（${p.label} 回了 ${created.status}${created.network ? `：${created.network}` : ''}）`,
+      detail: [messageOf(created.body) || `（${p.label} 没给错误体，也没有别的线索）`],
       hint: [
-        '也可以自己在网页上建一个私有仓，然后把名字填回 server/.dev.vars 的 GITEE_REPO',
+        `也可以自己在网页上建一个私有仓，然后把名字填回 ${CONFIG_REL} 的 REPO_REPO`,
         '仓库名被占了就换一个——脚本不会自动加后缀（那样会多出一个仓，你自己都找不到）',
       ],
     });
   }
 
-  const note = await giteeRequest(`/repos/${owner}/${repo}/contents/${encodeURIComponent(SAMPLE_NOTE_PATH)}`, {
+  // 放示例笔记：Gitee 新建走 POST，GitHub 新建走 PUT（都是「不带 sha」那一侧）
+  const note = await providerRequest(provider, `/repos/${owner}/${repo}/contents/${encodeURIComponent(SAMPLE_NOTE_PATH)}`, {
     token,
-    method: 'POST',
+    method: provider === 'github' ? 'PUT' : 'POST',
     payload: {
       content: Buffer.from(SAMPLE_NOTE, 'utf8').toString('base64'),
       message: '初始化：放一篇示例笔记',
@@ -553,7 +652,7 @@ async function createRepo(values, login) {
     throw new Stop({
       step: 3,
       headline: '仓库建好了，但示例笔记没写进去',
-      detail: [`Gitee 回的是 ${note.status}：${messageOf(note.body) || '（没有错误体）'}`],
+      detail: [`${p.label} 回的是 ${note.status}：${messageOf(note.body) || '（没有错误体）'}`],
       hint: ['仓库本身是可用的，重跑一次即可（建仓那步会因为已存在而跳过）'],
     });
   }
@@ -641,9 +740,38 @@ async function main(argv) {
     });
   }
   const raw = parseDevVars(fs.readFileSync(cfgFile, 'utf8'));
+
+  // 旧名字硬切（#36）：报一句「未配置」等于让人自己猜三个名字的对应关系，
+  // 而猜错的方向通常是「令牌坏了」，于是会白白重建一次令牌。
+  const legacy = legacyKeyReport(raw);
+  if (legacy.length) {
+    throw new Stop({
+      step: 1,
+      headline: '配置用的是旧变量名，已经不再认（换成中性名了）',
+      detail: [...legacy.map((line) => `${line}`), '另外要加一项 REPO_PROVIDER：连 Gitee 填 gitee，连 GitHub 填 github'],
+      hint: [
+        `改 ${CONFIG_REL} 里的名字（模板见 server/.dev.vars.example）`,
+        '这是硬切：旧名字不再兼容运行，但改三个名字只是几分钟的事',
+      ],
+    });
+  }
+
   const values = dropPlaceholderPassword(raw);
   if (raw.APP_PASSWORD && !values.APP_PASSWORD) {
     say('   APP_PASSWORD 还是模板里的占位值，按「没设」处理（要密码就换成真的）');
+  }
+
+  const problem = providerProblem(values);
+  if (problem) {
+    throw new Stop({
+      step: 1,
+      headline: problem,
+      detail: ['它决定这个部署连哪一家：两家的令牌、权限、接口都不一样'],
+      hint: [
+        `在 ${CONFIG_REL} 里写一行 REPO_PROVIDER = gitee（或 github）`,
+        '故意不给默认值：默认成 Gitee 的话，「配了 GitHub 令牌却忘写连哪家」会被报成「令牌无效」，方向全错',
+      ],
+    });
   }
 
   const missing = missingConfigKeys(values);
@@ -654,12 +782,14 @@ async function main(argv) {
       detail: ['这几项是应用自己要用的，缺一项应用就起不来'],
       hint: [
         `在 ${CONFIG_REL} 里补上（模板见 server/.dev.vars.example）`,
-        'GITEE_TOKEN 要勾 projects 权限；owner 与仓库名的大小写要和 Gitee 上完全一致',
+        '令牌的权限：Gitee 勾 projects；GitHub 用细粒度令牌、只授权这个仓库的 Contents: read/write',
+        'owner 与仓库名的大小写要和平台上完全一致',
       ],
     });
   }
   const plan = pushPlan(values);
   const shown = [...plan.secrets, ...plan.vars];
+  say(`   连的是 ${PROVIDER_HTTP[values.REPO_PROVIDER].label}（REPO_PROVIDER=${values.REPO_PROVIDER}）`);
   say(`   读到 ${shown.length} 项：${shown.join(' / ')}`);
 
   const unknown = unknownConfigKeys(values);
@@ -689,9 +819,10 @@ async function main(argv) {
   say(`   ${DEPLOY_TOKEN_ENV} 已设置（值不打印）`);
   if (process.env.CLOUDFLARE_ACCOUNT_ID) say('   CLOUDFLARE_ACCOUNT_ID 也设了：部署到它指定的那个账号');
 
-  /* 3 自检（本机 → gitee.com） ------------------------------------------ */
+  /* 3 自检（本机 → 仓库平台） ------------------------------------------- */
   step(3);
-  say('   走的是「本机 → gitee.com」，与后面部署那条路不是同一条');
+  const providerHost = PROVIDER_HTTP[values.REPO_PROVIDER].host;
+  say(`   走的是「本机 → ${providerHost}」，与后面部署那条路不是同一条`);
   let head;
   try {
     head = await selfCheck(values, { onLine: (l) => say(`   ${l}`) });
@@ -789,7 +920,7 @@ async function main(argv) {
   say('');
   say(url ? `   线上地址  ${url}` : '   （没能从输出里认出线上地址，去控制台看 Worker 的地址）');
 
-  /* 6 确认（Cloudflare → gitee.com） ------------------------------------ */
+  /* 6 确认（Cloudflare → 仓库平台） ------------------------------------- */
   step(6);
   if (!url) {
     // 认不出地址就不算跑完：这一步正是「部署成功」与「线上够得到仓库」的分界，
@@ -804,7 +935,7 @@ async function main(argv) {
       ],
     });
   }
-  say('   走的是「Cloudflare → gitee.com」——本机自检过了，不等于这条路通');
+  say(`   走的是「Cloudflare → ${providerHost}」——本机自检过了，不等于这条路通`);
 
   let probe;
   try {
@@ -869,10 +1000,10 @@ async function main(argv) {
   throw new Stop({
     step: 6,
     headline: `部署是成功的，但应用连不上仓库`,
-    detail: [probe.message, '这条路是「Cloudflare → gitee.com」，与开头那次自检不是同一条'],
+    detail: [probe.message, `这条路是「Cloudflare → ${providerHost}」，与开头那次自检不是同一条`],
     hint: [
       '先确认仓库名与令牌在线上真的是这份（控制台 → Workers → 这个 Worker → Settings → Variables）',
-      'Gitee 偶尔会拦境外出口，隔几分钟重跑一次；一直不行就当成「这个平台连不上 Gitee」来查',
+      `${PROVIDER_HTTP[values.REPO_PROVIDER].label} 偶尔会拦境外出口，隔几分钟重跑一次；一直不行就当成「这个平台连不上它」来查`,
     ],
   });
 }

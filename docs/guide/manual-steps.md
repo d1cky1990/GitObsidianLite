@@ -9,7 +9,7 @@
 
 ## 从头到尾的顺序
 
-1. 有 Gitee 账号 + 一个放笔记的仓库 → 生成**私人令牌**（第 1 节）
+1. 有 Gitee（或 GitHub）账号 + 一个放笔记的仓库 → 生成**私人令牌**（第 1 节）
 2. 有 Cloudflare 账号 → 生成**API 令牌**（第 2 节）
 3. 新账号才需要的：`workers.dev` 子域（第 3 节）
 4. 回 README 跑那条部署命令。终点是**手机打开网址看到笔记**，不是「本机跑起来了」
@@ -28,9 +28,11 @@
 
 **要点什么**：权限只勾 `projects`。别的不用给。
 
-**填进去的值从哪来**：提交后**只显示一次**，先粘到记事本。它就是 `server/.dev.vars` 里 `GITEE_TOKEN` 的值；同一份文件里还要填 `GITEE_OWNER`（你的 Gitee 用户名）与 `GITEE_REPO`（笔记仓库名，**大小写敏感**）。这份文件怎么弄见 README 的「部署上线」。
+**填进去的值从哪来**：提交后**只显示一次**，先粘到记事本。它就是 `server/.dev.vars` 里 `REPO_TOKEN` 的值；同一份文件里还要写 `REPO_PROVIDER = "gitee"`、`REPO_OWNER`（你的 Gitee 用户名）与 `REPO_REPO`（笔记仓库名，**大小写敏感**）。这份文件怎么弄见 README 的「部署上线」。
 
-**填完怎么验证**：不用自己写请求。部署命令第 3 步会拿这份配置去问 Gitee（四项只读检查，清单见 README 的步骤表）。全过就说明这三项都是对的。
+> **用 GitHub 当笔记仓库的话**：换的是这一步——登录 github.com → Settings → Developer settings → Personal access tokens → **Fine-grained tokens**，只授权那个笔记仓、权限给 `Contents: read and write`，然后照上面填 `REPO_TOKEN`，并把 `REPO_PROVIDER` 写成 `github`。**这一步要梯子**（`github.com` 不挂梯子打不开，而应用运行时不经过它）。截图与逐步演示属 [#37](https://github.com/d1cky1990/GitObsidianLite/issues/37)，图待补。
+
+**填完怎么验证**：不用自己写请求。部署命令第 3 步会拿这份配置去问对应的平台（四项只读检查，清单见 README 的步骤表）。全过就说明这几项都是对的。
 
 > **图 1**｜`docs/guide/images/01-gitee-token-page.png`
 > 该截哪一屏：私人令牌列表页，能看到「生成新令牌」按钮。

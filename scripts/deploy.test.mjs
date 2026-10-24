@@ -15,11 +15,15 @@ import {
   isPlaceholder,
   missingConfigKeys,
   unknownConfigKeys,
+  legacyKeyReport,
+  providerProblem,
+  isNameTaken,
+  PROVIDERS,
   pushPlan,
   dropPlaceholderPassword,
   deployVarArgs,
   parseWorkersUrl,
-  giteeFailureMessage,
+  providerFailureMessage,
   classifyRuntime,
   wranglerFailureStop,
   parseArgs,
@@ -31,13 +35,13 @@ import {
 /* ---------------- 读配置 ---------------- */
 
 test('parseDevVars：等号两边有没有空格都认', () => {
-  const parsed = parseDevVars(['GITEE_OWNER=d1cky1990', 'GITEE_REPO = note1'].join('\n'));
-  assert.deepEqual(parsed, { GITEE_OWNER: 'd1cky1990', GITEE_REPO: 'note1' });
+  const parsed = parseDevVars(['REPO_OWNER=d1cky1990', 'REPO_REPO = note1'].join('\n'));
+  assert.deepEqual(parsed, { REPO_OWNER: 'd1cky1990', REPO_REPO: 'note1' });
 });
 
 test('parseDevVars：注释行与空行跳过，行尾注释不算值', () => {
-  const parsed = parseDevVars(['# 这一行是注释', '', 'GITEE_REPO = note1   # 我的笔记库'].join('\n'));
-  assert.deepEqual(parsed, { GITEE_REPO: 'note1' });
+  const parsed = parseDevVars(['# 这一行是注释', '', 'REPO_REPO = note1   # 我的笔记库'].join('\n'));
+  assert.deepEqual(parsed, { REPO_REPO: 'note1' });
 });
 
 test('parseDevVars：引号里的 # 是值的一部分，不能被当注释切掉', () => {
@@ -55,27 +59,64 @@ test('isPlaceholder：模板里的占位值等于没填', () => {
 });
 
 test('missingConfigKeys：缺哪项点哪项，占位值也算缺', () => {
-  const full = { GITEE_TOKEN: 'tok1', GITEE_OWNER: 'd1cky1990', GITEE_REPO: 'note1' };
+  const full = { REPO_PROVIDER: 'gitee', REPO_TOKEN: 'tok1', REPO_OWNER: 'd1cky1990', REPO_REPO: 'note1' };
   assert.deepEqual(missingConfigKeys(full), []);
 
-  assert.deepEqual(missingConfigKeys({ GITEE_TOKEN: 'tok1', GITEE_REPO: 'note1' }), ['GITEE_OWNER']);
   assert.deepEqual(
-    missingConfigKeys({ GITEE_TOKEN: '你的私人令牌', GITEE_OWNER: 'd1cky1990', GITEE_REPO: 'note1' }),
-    ['GITEE_TOKEN'],
+    missingConfigKeys({ REPO_PROVIDER: 'gitee', REPO_TOKEN: 'tok1', REPO_REPO: 'note1' }),
+    ['REPO_OWNER']
+  );
+  assert.deepEqual(
+    missingConfigKeys({ REPO_PROVIDER: 'gitee', REPO_TOKEN: '你的私人令牌', REPO_OWNER: 'd1cky1990', REPO_REPO: 'note1' }),
+    ['REPO_TOKEN'],
     '还是模板里的占位值，等于没填'
   );
+  assert.deepEqual(
+    missingConfigKeys({ REPO_TOKEN: 'tok1', REPO_OWNER: 'o', REPO_REPO: 'r' }),
+    ['REPO_PROVIDER'],
+    '供应商没有默认值——缺了就是缺了'
+  );
+});
+
+/* ---------------- 旧名字与供应商取值 ---------------- */
+
+test('旧名字还在用：逐条给出「旧名 → 新名」', () => {
+  const report = legacyKeyReport({ GITEE_TOKEN: 'tok1', GITEE_OWNER: 'o', GITEE_REPO: 'r' });
+  assert.deepEqual(report, ['GITEE_TOKEN → REPO_TOKEN', 'GITEE_OWNER → REPO_OWNER', 'GITEE_REPO → REPO_REPO']);
+});
+
+test('新旧名字都配了：不拿旧名字拦人', () => {
+  // 旧行没删只是懒，不是错——按新名字跑就行
+  assert.deepEqual(
+    legacyKeyReport({ GITEE_OWNER: 'stale', REPO_PROVIDER: 'gitee', REPO_TOKEN: 'tok1', REPO_OWNER: 'o', REPO_REPO: 'r' }),
+    []
+  );
+});
+
+test('REPO_PROVIDER：缺了、或写了别家，都说清可选值', () => {
+  assert.match(providerProblem({}), /没有默认值/);
+  const bad = providerProblem({ REPO_PROVIDER: 'gitlab' });
+  assert.match(bad, /gitee 或 github/);
+  assert.match(bad, /gitlab/);
+  assert.equal(providerProblem({ REPO_PROVIDER: 'github' }), null);
+});
+
+test('可取值名单与后端适配层是同一份（别各写各的）', async () => {
+  const { PROVIDER_NAMES } = await import('../server/src/providers/index.js');
+  assert.deepEqual(PROVIDERS, PROVIDER_NAMES);
 });
 
 /* ---------------- 只推该推的那几项 ---------------- */
 
 test('pushPlan：机密走 secret，其余走 var；访问密码只在设了的时候推', () => {
-  assert.deepEqual(pushPlan({ GITEE_TOKEN: 'tok1', GITEE_OWNER: 'o', GITEE_REPO: 'r' }), {
-    secrets: ['GITEE_TOKEN'],
-    vars: ['GITEE_OWNER', 'GITEE_REPO'],
+  const base = { REPO_PROVIDER: 'gitee', REPO_TOKEN: 'tok1', REPO_OWNER: 'o', REPO_REPO: 'r' };
+  assert.deepEqual(pushPlan(base), {
+    secrets: ['REPO_TOKEN'],
+    vars: ['REPO_PROVIDER', 'REPO_OWNER', 'REPO_REPO'],
   });
-  assert.deepEqual(pushPlan({ GITEE_TOKEN: 'tok1', GITEE_OWNER: 'o', GITEE_REPO: 'r', APP_PASSWORD: 'pw1' }), {
-    secrets: ['GITEE_TOKEN', 'APP_PASSWORD'],
-    vars: ['GITEE_OWNER', 'GITEE_REPO'],
+  assert.deepEqual(pushPlan({ ...base, APP_PASSWORD: 'pw1' }), {
+    secrets: ['REPO_TOKEN', 'APP_PASSWORD'],
+    vars: ['REPO_PROVIDER', 'REPO_OWNER', 'REPO_REPO'],
   });
 });
 
@@ -84,33 +125,38 @@ test('配置文件里多出来的键不会被推上去', () => {
   // 那份文件会被整份读进应用进程，误放的部署令牌如果被一起推上去，
   // 就等于把它交给了另一个平台。
   const parsed = {
-    GITEE_TOKEN: 'tok1',
-    GITEE_OWNER: 'o',
-    GITEE_REPO: 'r',
+    REPO_PROVIDER: 'gitee',
+    REPO_TOKEN: 'tok1',
+    REPO_OWNER: 'o',
+    REPO_REPO: 'r',
     DEPLOY_TOKEN: 'fake-value',
   };
   const plan = pushPlan(parsed);
-  assert.deepEqual([...plan.secrets, ...plan.vars], ['GITEE_TOKEN', 'GITEE_OWNER', 'GITEE_REPO']);
+  assert.deepEqual([...plan.secrets, ...plan.vars], ['REPO_TOKEN', 'REPO_PROVIDER', 'REPO_OWNER', 'REPO_REPO']);
   assert.deepEqual(unknownConfigKeys(parsed), ['DEPLOY_TOKEN']);
 });
 
 test('访问密码还是占位话时按「没设」处理', () => {
   // 不处理的话，它会作为一个真的密码推上去，而末尾确认拿同一个字符串比对也过得去——
   // 「密码没填」这件事从头到尾不会露头
-  const kept = dropPlaceholderPassword({ GITEE_TOKEN: 'tok1', GITEE_OWNER: 'o', GITEE_REPO: 'r' });
+  const kept = dropPlaceholderPassword({ REPO_TOKEN: 'tok1', REPO_OWNER: 'o', REPO_REPO: 'r' });
   assert.equal('APP_PASSWORD' in kept, false);
 
-  const dropped = dropPlaceholderPassword({ GITEE_OWNER: 'o', APP_PASSWORD: '你的访问密码' });
+  const dropped = dropPlaceholderPassword({ REPO_OWNER: 'o', APP_PASSWORD: '你的访问密码' });
   assert.equal('APP_PASSWORD' in dropped, false);
-  assert.deepEqual(pushPlan(dropped).secrets, ['GITEE_TOKEN']);
+  assert.deepEqual(pushPlan(dropped).secrets, ['REPO_TOKEN']);
 
-  const real = dropPlaceholderPassword({ GITEE_OWNER: 'o', APP_PASSWORD: 'pw1' });
+  const real = dropPlaceholderPassword({ REPO_OWNER: 'o', APP_PASSWORD: 'pw1' });
   assert.equal(real.APP_PASSWORD, 'pw1');
 });
 
-test('deployVarArgs：两个 --var，且命令行里不出现令牌', () => {
-  const args = deployVarArgs({ GITEE_TOKEN: 'tok1', GITEE_OWNER: 'd1cky1990', GITEE_REPO: 'note1' });
-  assert.deepEqual(args, ['--var', 'GITEE_OWNER:d1cky1990', '--var', 'GITEE_REPO:note1']);
+test('deployVarArgs：三个 --var，且命令行里不出现令牌', () => {
+  const args = deployVarArgs({ REPO_PROVIDER: 'gitee', REPO_TOKEN: 'tok1', REPO_OWNER: 'd1cky1990', REPO_REPO: 'note1' });
+  assert.deepEqual(args, [
+    '--var', 'REPO_PROVIDER:gitee',
+    '--var', 'REPO_OWNER:d1cky1990',
+    '--var', 'REPO_REPO:note1',
+  ]);
   assert.equal(args.join(' ').includes('tok1'), false, '机密不走命令行——那会进进程列表和 shell 历史');
 });
 
@@ -136,7 +182,7 @@ test('parseWorkersUrl：认不出来就交白卷，不猜', () => {
 /* ---------------- 失败怎么说 ---------------- */
 
 test('自检：令牌被拒 → 配置类，点名去 Gitee 重新生成', () => {
-  const m = giteeFailureMessage({ what: 'token', status: 401, body: { message: '401 Unauthorized' } });
+  const m = providerFailureMessage({ what: 'token', status: 401, body: { message: '401 Unauthorized' } });
   assert.equal(m.kind, 'config');
   assert.match(m.message, /令牌/);
   assert.match(m.hint.join(' '), /私人令牌/);
@@ -144,7 +190,7 @@ test('自检：令牌被拒 → 配置类，点名去 Gitee 重新生成', () =>
 });
 
 test('自检：仓库 404 → 配置类，提醒名字大小写与建仓选项', () => {
-  const m = giteeFailureMessage({ what: 'repo', status: 404, body: { message: 'Not Found' } });
+  const m = providerFailureMessage({ what: 'repo', status: 404, body: { message: 'Not Found' } });
   assert.equal(m.kind, 'config');
   assert.match(m.message, /仓库不存在/);
   assert.match(m.hint.join(' '), /大小写/);
@@ -153,19 +199,19 @@ test('自检：仓库 404 → 配置类，提醒名字大小写与建仓选项',
 
 test('自检：默认分支 404 → 说的是「空仓库」，不是「仓库不存在」', () => {
   // 同一个 404 在两处意思不同，混着说会把人指到错的地方
-  const m = giteeFailureMessage({ what: 'branch', status: 404, body: null });
+  const m = providerFailureMessage({ what: 'branch', status: 404, body: null });
   assert.equal(m.kind, 'config');
   assert.match(m.message, /空仓库/);
 });
 
 test('自检：没有写权限 → 配置类', () => {
-  const m = giteeFailureMessage({ what: 'write', status: 200, body: { permission: { push: false } } });
+  const m = providerFailureMessage({ what: 'write', status: 200, body: { permission: { push: false } } });
   assert.equal(m.kind, 'config');
   assert.match(m.message, /没有写权限/);
 });
 
 test('自检：网络类失败说「重跑一次」，不说去改配置', () => {
-  const m = giteeFailureMessage({ what: 'token', network: '等了 15 秒没有回应' });
+  const m = providerFailureMessage({ what: 'token', network: '等了 15 秒没有回应' });
   assert.equal(m.kind, 'network');
   assert.match(m.message, /连不上 gitee\.com/);
   assert.match(m.hint.join(' '), /重跑一次/);
@@ -173,9 +219,31 @@ test('自检：网络类失败说「重跑一次」，不说去改配置', () =>
 });
 
 test('自检：Gitee 自己 502 时不冒充「令牌不对」', () => {
-  const m = giteeFailureMessage({ what: 'token', status: 502, body: '<html>bad gateway</html>' });
+  const m = providerFailureMessage({ what: 'token', status: 502, body: '<html>bad gateway</html>' });
   assert.equal(m.kind, 'network');
   assert.match(m.message, /502/);
+});
+
+test('自检：GitHub 侧的话跟着换——令牌被拒指向细粒度令牌，不是 Gitee 那套', () => {
+  const m = providerFailureMessage({ provider: 'github', what: 'token', status: 401, body: { message: 'Bad credentials' } });
+  assert.equal(m.kind, 'config');
+  assert.match(m.message, /GitHub/);
+  assert.match(m.hint.join(' '), /Fine-grained|细粒度/);
+  assert.match(m.hint.join(' '), /Contents/);
+  assert.equal(/projects 权限/.test(m.hint.join(' ')), false, '别把 Gitee 的权限说明搬到 GitHub 上');
+});
+
+test('自检：GitHub 网络失败说的是它自己的域名', () => {
+  const m = providerFailureMessage({ provider: 'github', what: 'token', network: 'fetch failed' });
+  assert.equal(m.kind, 'network');
+  assert.match(m.message, /连不上 api\.github\.com/);
+});
+
+test('建仓撞名：两家各自的号码都认得出，别的 422 不认', () => {
+  assert.equal(isNameTaken('gitee', { status: 400, body: { message: '文件名已存在' } }), true);
+  assert.equal(isNameTaken('github', { status: 422, body: { message: 'Repository creation failed.', errors: [{ code: 'already_exists' }] } }), true);
+  assert.equal(isNameTaken('github', { status: 422, body: { message: 'Invalid request.', errors: [{ code: 'invalid' }] } }), false);
+  assert.equal(isNameTaken('github', { status: 404, body: { message: 'Not Found' } }), false);
 });
 
 /* ---------------- 末尾那次确认 ---------------- */
@@ -194,7 +262,7 @@ test('确认：地址打不开 ≠ 部署失败，也不等于应用连不上仓
 });
 
 test('确认：变量没到位（应用自己说未配置）', () => {
-  const body = { error: '未配置 GITEE_TOKEN / GITEE_OWNER / GITEE_REPO（本地放 .dev.vars，线上配环境变量）' };
+  const body = { error: '未配置 REPO_PROVIDER / REPO_TOKEN / REPO_OWNER / REPO_REPO（本地放 .dev.vars，线上配环境变量）' };
   const r = classifyRuntime({ status: 500, body });
   assert.equal(r.kind, 'missing-vars');
   assert.match(r.message, /变量没配齐/);
@@ -265,7 +333,7 @@ const MEMBERSHIPS_FAILURE = {
 test('「账号级令牌」那句话必须是它自己的一句，不能混成「令牌不对」', () => {
   // 这条是被真跑纠正过的：同一个 400，说成「令牌是假的」会让人不停重建令牌，
   // 而真正缺的是「告诉 wrangler 用哪个账号」
-  const stop = wranglerFailureStop(MEMBERSHIPS_FAILURE, '推 GITEE_TOKEN 没成');
+  const stop = wranglerFailureStop(MEMBERSHIPS_FAILURE, '推 REPO_TOKEN 没成');
   assert.match(stop.info.headline, /账号级/);
   const hints = stop.info.hint.join(' ');
   assert.match(hints, /CLOUDFLARE_ACCOUNT_ID/, '要给出最快的那条解法');

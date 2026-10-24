@@ -5,7 +5,7 @@
 //   1. 指纹 —— 拿本机 server/.dev.vars 里的真值当指纹去扫。零误报、与格式无关。
 //      这是唯一盖得住 Gitee 令牌的那一层：32 位 hex、无固定前缀，平台侧的
 //      provider 规则对它完全失明（结论见 #1）。
-//   2. 形态 —— 敏感变量名 + 像真值的赋值（GITEE_TOKEN = "..."）、私钥文件块、
+//   2. 形态 —— 敏感变量名 + 像真值的赋值（REPO_TOKEN = "..."）、私钥文件块、
 //      天然的凭据文件名。
 //   3. 熵   —— 高熵长串，**但只在它紧邻敏感词时**（`token=…`、`Bearer …`）。
 //      不设「无关键词也拦」的那一档：lock 文件的 integrity、文档里的 URL 会立刻
@@ -14,7 +14,7 @@
 //
 // 这套东西成不成立只看一件事：**它会不会被人主动绕开**。误报多的 hook 会被
 // --no-verify 掉，等于没装——而且更糟，它会让人以为有防护。所以规则只拦
-// 「像真实值的」，文档里光出现 GITEE_TOKEN 这个变量名不算。
+// 「像真实值的」，文档里光出现 REPO_TOKEN 这个变量名不算。
 //
 // 用法：
 //   node scripts/check-secrets.mjs          检查暂存内容（pre-commit 调它）
@@ -215,7 +215,7 @@ export function loadFingerprints(root, env = process.env) {
   // 一个名字一行：这一层的「敏感词紧邻」规则会把同一行里前一个 *_TOKEN 当成
   // 后一个的线索，于是 `'CLOUDFLARE_API_TOKEN'` 会被当成高熵串报出来（实测）。
   for (const key of [
-    'GITEE_TOKEN',
+    'REPO_TOKEN',
     'APP_PASSWORD',
     'CLOUDFLARE_API_TOKEN',
   ]) {

@@ -2,11 +2,11 @@
 
 > 由 wayfinder 决策地图产出（同目录 `map.md`）。四张决策票已全部解决，本文档是构建的直接输入。
 >
-> **时效**：2026-08-29 定稿，2026-09-13、2026-09-19 校正。校正内容——部署平台由 EdgeOne Pages 改为 Deno Deploy（MVP 已上线）、补齐实现期新增的访问密码鉴权、字符级 diff 由「计划引入 diff-match-patch」改为「已自实现」；§8 的双链措辞按实现校正、§10 的待办清单改为指向 tracker（2026-09-19 进一步删去清单本身，只指向 tracker）；2026-10-01 按标签 / 勾选框 / Tasks / 声明区四张定稿票回写 §1 的范围与非目标、§8 新增三条并改正 frontmatter 的冲突口径（[#31](https://github.com/d1cky1990/GitObsidianLite/issues/31)）；2026-10-02 按 §5、§6 与代码对账（提交 `8198c15`），并补上搜索那一批——§4 的批量取正文、§5 的本地正文副本与增量来源、§6 的搜索与设置两节（[#33](https://github.com/d1cky1990/GitObsidianLite/issues/33)）；2026-10-18 按 [#39](https://github.com/d1cky1990/GitObsidianLite/issues/39) 的平台切换重写 §2 的后端两行、§3 的架构图与 §9（Deno Deploy 约 2027-04 关停，改为 **Cloudflare Workers**，大陆可达性不再是硬约束），并按 [#40](https://github.com/d1cky1990/GitObsidianLite/issues/40) 校正 §4 的批大小（50 → 20）；同日再按 [#38](https://github.com/d1cky1990/GitObsidianLite/issues/38) 补上**上游限流的实测节奏**（§4）、并改掉「正文没备齐就整组不出」那一态（§5）。同目录的 `issues/` 与 `research/` 是**历史快照**，保留原貌不动，其中平台选型的结论已被本文件取代。
+> **时效**：2026-08-29 定稿，2026-09-13、2026-09-19 校正。校正内容——部署平台由 EdgeOne Pages 改为 Deno Deploy（MVP 已上线）、补齐实现期新增的访问密码鉴权、字符级 diff 由「计划引入 diff-match-patch」改为「已自实现」；§8 的双链措辞按实现校正、§10 的待办清单改为指向 tracker（2026-09-19 进一步删去清单本身，只指向 tracker）；2026-10-01 按标签 / 勾选框 / Tasks / 声明区四张定稿票回写 §1 的范围与非目标、§8 新增三条并改正 frontmatter 的冲突口径（[#31](https://github.com/d1cky1990/GitObsidianLite/issues/31)）；2026-10-02 按 §5、§6 与代码对账（提交 `8198c15`），并补上搜索那一批——§4 的批量取正文、§5 的本地正文副本与增量来源、§6 的搜索与设置两节（[#33](https://github.com/d1cky1990/GitObsidianLite/issues/33)）；2026-10-18 按 [#39](https://github.com/d1cky1990/GitObsidianLite/issues/39) 的平台切换重写 §2 的后端两行、§3 的架构图与 §9（Deno Deploy 约 2027-04 关停，改为 **Cloudflare Workers**，大陆可达性不再是硬约束），并按 [#40](https://github.com/d1cky1990/GitObsidianLite/issues/40) 校正 §4 的批大小（50 → 20）；同日再按 [#38](https://github.com/d1cky1990/GitObsidianLite/issues/38) 补上**上游限流的实测节奏**（§4）、并改掉「正文没备齐就整组不出」那一态（§5）；2026-10-24 按 [#17](https://github.com/d1cky1990/GitObsidianLite/issues/17) 的定稿与 [#36](https://github.com/d1cky1990/GitObsidianLite/issues/36) 的实现，把「只连 Gitee」改成**双供应商**——§1 的目标措辞、§2 的适配层、§3 的架构图、§4 的接口表与 §7 的配置名（`REPO_PROVIDER` / `REPO_TOKEN` / `REPO_OWNER` / `REPO_REPO`）一并归位。同目录的 `issues/` 与 `research/` 是**历史快照**，保留原貌不动，其中平台选型的结论已被本文件取代。
 
 ## 1. 目标与边界
 
-**目标**：一个手机浏览器访问的轻量 Web 应用，通过 Gitee API 按需拉取 / 编辑单个笔记并提交，替代手机端 obsidian-git 的整库拉取（整库拉取在手机 git 上会卡死）。
+**目标**：一个手机浏览器访问的轻量 Web 应用，通过**仓库平台的 API**（Gitee 或 GitHub，一份部署只连一家）按需拉取 / 编辑单个笔记并提交，替代手机端 obsidian-git 的整库拉取（整库拉取在手机 git 上会卡死）。
 
 **场景**：手机低频查看 / 编辑少数文件；PC 高频改动仓库。手机改动低频、PC 改动高频。
 
@@ -25,6 +25,7 @@
 | Markdown 渲染 | markdown-it（+ tables 插件） | 轻量、GFM、易扩展 wikilink 插件 |
 | 字符级 diff | 自实现字符级 LCS（`web/src/main.js`） | 只需「高亮 + 逐个采纳」这一档粒度，引入 diff-match-patch 是多一个依赖；实测够用 |
 | 后端 | 平台无关核心 + 薄适配器 | `server/src/core.js` 是唯一实现（藏 token、解 CORS、UTF-8 编解码）；`server/src/index.js` 是唯一的入口（Cloudflare Workers），只做分工：`/api/*` 进 core，其余交给静态资源绑定 |
+| 仓库平台适配层 | `server/src/providers/`（gitee / github 各一份） | 两家的鉴权形态、端点形状与错误码**只住在各自的文件里**；`core.js` 只认同一组动作与四个错误词，所以换供应商时前端一个字不改。形态定在 [#17 的结论](https://github.com/d1cky1990/GitObsidianLite/issues/17)，实现见 [#36](https://github.com/d1cky1990/GitObsidianLite/issues/36) |
 | 后端运行时 | Cloudflare Workers | 见 §9；两项免费档限制靠压实现适应（批大小与并发，见 §4） |
 | 后端存储 | **无** | 不存任何状态；机密全走环境变量（见 §7），不引入 KV |
 | 前端缓存 | localStorage（文件树 + 最近文件） | 按需缓存；IndexedDB 未采用，v1 不需要 |
@@ -40,12 +41,15 @@ Cloudflare Workers —— 一个域名，静态资源与 API 同源
       └── server/src/index.js ──► server/src/core.js（平台无关核心，唯一实现）
                                       │ 代理 + 藏 token + 解 CORS + UTF-8 编解码
                                       ▼
-                              Gitee OpenAPI v5（gitee.com/api/v5）
+                              server/src/providers/（按 REPO_PROVIDER 挑一家）
+                                      │ 吸收两家的鉴权、端点与错误码差异
+                                      ▼
+                        仓库平台：Gitee API v5 或 GitHub REST（一份部署只连一家）
 ```
 
-- 前端**只与自己的后端通信，不直连 Gitee**——Gitee 响应不返回 CORS 头，且 token 绝不能进浏览器。
-- 后端持有 `GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO`（全部环境变量，见 §7），对前端暴露最小化 API。
-- owner / repo 固定在后端配置，前端请求不携带，避免越权。
+- 前端**只与自己的后端通信，不直连仓库平台**——它们的响应不返回 CORS 头，且 token 绝不能进浏览器。
+- 后端持有 `REPO_PROVIDER` / `REPO_TOKEN` / `REPO_OWNER` / `REPO_REPO`（全部环境变量，见 §7），对前端暴露最小化 API。
+- owner / repo 固定在后端配置，前端请求不携带，避免越权。**这是「一份部署只连一个仓库」那条决定的落点**（[#17](https://github.com/d1cky1990/GitObsidianLite/issues/17) §1）。
 - **静态资源与 API 同源**（同一个域名下，静态资源与 `/api/*` 由同一次部署伺服），因此不存在跨域请求与跨站 cookie 问题。
 
 ## 4. 后端 API（对前端暴露）
@@ -53,29 +57,26 @@ Cloudflare Workers —— 一个域名，静态资源与 API 同源
 > 设计意图如下；**权威描述是 `server/src/core.js`**——路由全部集中在一处，改动以它为准。
 > 这里不写它的行数：那个数字只会一直过期。
 
-| 方法 | 路径 | 功能 | 对应的 Gitee API |
+| 方法 | 路径 | 功能 | 对应的上游动作（两家各一份实现） |
 |---|---|---|---|
 | GET | `/api/head` | 仓库默认分支 HEAD sha | `GET /repos/{o}/{r}/branches/{default}` |
 | GET | `/api/tree?path=` | 列某目录下内容（懒加载） | `GET /repos/{o}/{r}/contents/{path}` |
 | GET | `/api/tree/recursive` | 整棵树（path→blob sha） | `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1` |
 | GET | `/api/file?path=` | 读文件（base64→utf8） | `GET /repos/{o}/{r}/contents/{path}` |
-| PUT | `/api/file` | **写文件**：带 `sha` 改、不带 `sha` 建 | `PUT` / `POST /repos/{o}/{r}/contents/{path}` |
-| DELETE | `/api/file` | 删文件（body: path/sha/message） | `DELETE /repos/{o}/{r}/contents/{path}` |
+| PUT | `/api/file` | **写文件**：带 `sha` 改、不带 `sha` 建 | Gitee：`PUT` / `POST` 两个端点；GitHub：同一个 `PUT` |
+| DELETE | `/api/file` | 删文件（body: path/sha/message） | `DELETE /repos/{o}/{r}/contents/{path}`（参数位置两家不同） |
 | POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤20） | `GET /repos/{o}/{r}/git/blobs/{sha}` ×N |
-| GET | `/api/raw?path=` | 图片 / 附件 raw（代理转发） | `GET /repos/{o}/{r}/raw/{path}` |
+| GET | `/api/raw?path=` | 图片 / 附件 raw（代理转发） | Gitee：`GET /repos/{o}/{r}/raw/{path}`；GitHub：contents + `Accept: raw` |
 
-- 写文件请求体：`{ path, message, content, sha }`；后端校验后转 base64 调 Gitee。
-- **「建」与「改」在 Gitee 是两个端点，这层差异留在服务端**：`PUT` 的 `sha` 在那里是必填
-  （缺了直接 `400 sha is missing`），新建走 `POST`（无 sha，成功 201）。浏览器只该知道
-  「带 sha 是改、不带是建」。
-- **同名新建被 Gitee 自己挡下**（`400 文件名已存在`，原文件不动）→ 后端转成 409 + `exists` 标记，
-  前端据此说「这个名字已经有了」。同一条规则也用在移动的目标目录上。
-- **冲突信号是 `400`，不是 409**（2026-09-21 实测）：`{"message":"Blob SHA does not match"}`，
-  且远端内容未被覆盖。后端按**措辞**而非状态码判定，因为同一个 400 还被「缺 sha」「内容为空」
-  两种情况共用。识别为冲突后统一返回 **409** 给前端，并附上最新 sha 与远端内容。
-- **不存在的路径，Gitee 回的是 `200 + []`**（文件和目录都这样）——不能用状态码判存在性，
-  只能看 body。`/api/file` 因此把空数组认作 404「文件不存在」。
-- **空内容建不出来**（`400 content is empty`）：新建空笔记写的是一个换行。
+- 写文件请求体：`{ path, message, content, sha }`；后端校验后转 base64 调上游。
+- **两家在「写」上的差异全部留在适配层**，前端只该知道「带 sha 是改、不带是建」。差异清单（五处）与归一后的语义**定在 [#17 §2 的表格里](https://github.com/d1cky1990/GitObsidianLite/issues/17)**，本节不复述——只重复其中最不能漏的一条：**写冲突必须归一成 409 + `conflict` + 远端正文**，漏判成普通失败会让冲突合并界面永远不出现，用户会以为改动丢了。
+- 这一面对前端只剩**四种去向**，一个都不能混：
+  - **冲突** → `409` + `conflict:true` + 远端正文（合并界面靠它）；
+  - **撞名** → `409` + `exists:true`（不是冲突，没有远端内容可合并）；
+  - **路径上没有东西** → `404` + `notFound:true`；**路径是目录**是另一件事 → `400` 并指路 `/api/tree`；
+  - **其余** → 原样透传状态码与措辞。
+- **各家上游把这些回成什么形状、实测措辞是什么，记在 `README.md` 的「写操作的脾气」一节**（那里撞一次记一条，是本仓库放「只能实测得来」的地方），本档案只登记我们的语义，不复述第二份。
+- **空内容建不出来**（上游一侧的限制）：新建空笔记写的是一个换行。这条由调用方保证，所以两家行为一致。
 - **批量取正文（`/api/blobs`）只认指纹，不认路径**：上游 `git/blobs` 认的就是 sha，而每篇的 sha 客户端本来就有（见 §5）。它**单条失败只报单条**——一篇被别处删了不能让整批作废，否则手机会每次都在同一条上再摔一次。一批 ≤20（为什么不是 50，写在 `server/src/core.js` 的 `MAX_BLOB_BATCH` 上），分批是留给客户端断点续传的粒度，不是为了省请求数。
 - **上游会限流，是按出口 IP 的速率掐的，且状态码分辨不出**：被拦时回的不是 JSON，是**一整页 WAF 拦截页**；随后同一 IP 上 `/api/head`、`/api/tree` 一起 403。
   - **速率线**（2026-10-19 00:15–00:19 加压实测，单出口）：每分钟 240 次、480 次两档各跑满 60 秒都干净；**960 次/分钟那档在第 451 个请求（约 39 秒）被拦**——折算下来，撞上时前一分钟内累计约 **600 个请求**。
@@ -135,7 +136,7 @@ Cloudflare Workers —— 一个域名，静态资源与 API 同源
 
 两层，职责不同。
 
-**① Gitee 令牌（机器身份）**：`GITEE_TOKEN` / `GITEE_OWNER` / `GITEE_REPO` 全部为后端环境变量，**永不进浏览器**；owner 与 repo 固定在后端，前端请求不携带（见 §3）。
+**① 仓库令牌（机器身份）**：`REPO_PROVIDER` / `REPO_TOKEN` / `REPO_OWNER` / `REPO_REPO` 全部为后端环境变量，**永不进浏览器**；owner 与 repo 固定在后端，前端请求不携带（见 §3）。变量名不认厂商（`gitee` / `github` 只出现在 `REPO_PROVIDER` 的取值里），来源与迁移策略见 [#17 §3、§4](https://github.com/d1cky1990/GitObsidianLite/issues/17)——**旧名硬切、不回落**：配了旧名时服务端与部署脚本都逐条点名该改成哪个新名。
 
 **② 访问密码（人的身份；可选，实现期新增）**——设了 `APP_PASSWORD` 才启用：
 
@@ -176,7 +177,7 @@ Cloudflare Workers —— 一个域名，静态资源与 API 同源
 
 设计层面当初有三条约束。今天的状态是：第一条仍然有效（而且是被实测站住的），第二条已经撤销，第三条仍然有效。
 
-1. **运行时必须能直连 gitee.com**。**仍然有效**，且与「手机能不能连上这个应用」是两件事：它管的是服务端调不调得动上游。Gitee 不返回 CORS 头、token 不能进浏览器，所以必须有服务端——纯静态托管（GitHub Pages、Vercel/Netlify 静态）在架构上就不可行。**这一条是实测站住的，不是推断的**：2026-10-18 在线上验过（[#41](https://github.com/d1cky1990/GitObsidianLite/issues/41)）——部署脚本末尾那次确认打了一次线上地址、读了一次仓库最新版本，走的正是「部署平台 → 仓库平台」这条路；同一天四条主路径也在真浏览器里跑通（读一篇、改一篇并回仓库确认、点勾选框、带图笔记的图片经 `/api/raw`）。要记住它不通时的样子：**页面能打开、一篇笔记都读不出来**——这是最容易被误判成前端 bug 的一种失败。
+1. **运行时必须能直连仓库平台**（Gitee 或 GitHub，取决于 `REPO_PROVIDER`）。**仍然有效**，且与「手机能不能连上这个应用」是两件事：它管的是服务端调不调得动上游。上游不返回 CORS 头、token 不能进浏览器，所以必须有服务端——纯静态托管（GitHub Pages、Vercel/Netlify 静态）在架构上就不可行。**这一条是实测站住的，不是推断的**：2026-10-18 在线上验过（[#41](https://github.com/d1cky1990/GitObsidianLite/issues/41)）——部署脚本末尾那次确认打了一次线上地址、读了一次仓库最新版本，走的正是「部署平台 → 仓库平台」这条路；同一天四条主路径也在真浏览器里跑通（读一篇、改一篇并回仓库确认、点勾选框、带图笔记的图片经 `/api/raw`）。要记住它不通时的样子：**页面能打开、一篇笔记都读不出来**——这是最容易被误判成前端 bug 的一种失败。
 2. **大陆可达性已撤销**（2026-10-18，[#39](https://github.com/d1cky1990/GitObsidianLite/issues/39)）。它曾是硬约束，撤销的理由就是上面那个前提没了：三条里总要舍一条，而「自己买机器 + 备案 1~2 周」会把自托管的上手门槛顶到与 [#18](https://github.com/d1cky1990/GitObsidianLite/issues/18) 的目的地相冲突的高度。**代价写在明处**：手机端会慢；地址是平台子域名（`*.workers.dev` 在国内长期不稳），日常访问大概要挂着梯子——这就是「能用梯子连上即可」的实际含义，不是「暂时放宽」。具体慢多少，实测数字记在 [#41](https://github.com/d1cky1990/GitObsidianLite/issues/41) 的评论里，本档案不复述。免费子域名先用着，自有域名留到嫌慢或嫌地址难看时再说。
 3. **静态资源与 API 同源**。**仍然有效**：`web/dist` 作为 Workers 的静态资源绑定，与 `/api/*` 由同一个 Worker 伺服，省掉 CORS 与跨站 cookie 的全部麻烦。
 

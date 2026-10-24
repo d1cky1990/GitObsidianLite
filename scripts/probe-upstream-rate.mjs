@@ -162,16 +162,22 @@ async function hit(path, { timeout = 30000 } = {}) {
 /** 读配置、验令牌、拿整棵树。两种模式共用这一段。 */
 async function prepare() {
   const vars = parseVars(await readFile(VARS_FILE, 'utf8'));
-  const { GITEE_TOKEN, GITEE_OWNER, GITEE_REPO } = vars;
+  const { REPO_PROVIDER, REPO_TOKEN, REPO_OWNER, REPO_REPO } = vars;
+  // 这把尺子只量过 Gitee 的 WAF（#38）。GitHub 侧的限流是另一套、没量过——
+  // 拿它去测 GitHub 会测出一个不是 GitHub 的数字，比没有更糟。
+  if (REPO_PROVIDER && REPO_PROVIDER !== 'gitee') {
+    console.error(`这份探针只量过 Gitee 的限流，现在配置连的是 ${REPO_PROVIDER}。要量它就另外写一把尺子。`);
+    process.exit(2);
+  }
   const missing = [
-    ['GITEE_TOKEN', GITEE_TOKEN], ['GITEE_OWNER', GITEE_OWNER], ['GITEE_REPO', GITEE_REPO],
+    ['REPO_TOKEN', REPO_TOKEN], ['REPO_OWNER', REPO_OWNER], ['REPO_REPO', REPO_REPO],
   ].filter(([, v]) => !v).map(([k]) => k);
   if (missing.length) {
     console.error(`server/.dev.vars 里缺 ${missing.join(' / ')}，没法测。`);
     process.exit(2);
   }
-  token = GITEE_TOKEN;
-  const repo = `/repos/${GITEE_OWNER}/${GITEE_REPO}`;
+  token = REPO_TOKEN;
+  const repo = `/repos/${REPO_OWNER}/${REPO_REPO}`;
 
   const ip = await exitIpMasked();
   say(`出口 IP（遮蔽）：${ip}`);

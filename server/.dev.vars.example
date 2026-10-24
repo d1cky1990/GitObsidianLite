@@ -1,13 +1,19 @@
-# 复制本文件为 .dev.vars 并填入你自己的 Gitee 配置
+# 复制本文件为 .dev.vars 并填入你自己的仓库配置
 # .dev.vars 已被 git 忽略；本地开发（wrangler dev）与部署（scripts/deploy.mjs）读的是同一份。
 # 部署时推哪几项、部署令牌放哪，见 README 的「部署上线」。
 
-# Gitee 私人令牌（勾选 projects 权限）。在哪生成见 docs/guide/manual-steps.md 第 1 节。
-GITEE_TOKEN = "你的私人令牌"
+# 连哪一家：gitee 或 github。**没有默认值**——写清连哪家，才不会拿着 GitHub 的令牌
+# 去问 Gitee，然后得到一个「令牌无效」的错误。
+REPO_PROVIDER = "gitee"
 
-# 仓库 owner（你的 Gitee 用户名）和仓库名
-GITEE_OWNER = "你的用户名"
-GITEE_REPO = "你的笔记仓库名"
+# 访问令牌。
+#   Gitee：私人令牌，勾选 projects 权限（docs/guide/manual-steps.md 第 1 节）
+#   GitHub：细粒度 PAT，只授权这个仓库的 Contents: read/write（最小权限）
+REPO_TOKEN = "你的令牌"
+
+# 仓库 owner 和仓库名（大小写要与平台上完全一致）
+REPO_OWNER = "你的用户名"
+REPO_REPO = "你的笔记仓库名"
 
 # 访问密码（可选）。配置后所有 /api 请求需带 X-Auth 头（前端自动处理并弹窗输入）。
 # 不配就完全不鉴权，靠「地址不公开」兜底——线上建议配。

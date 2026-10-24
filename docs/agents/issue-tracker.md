@@ -23,7 +23,7 @@ The repo is public and **issues are not retractable** — deleting one doesn't e
 - No absolute local paths, machine names, or deployment URLs.
 - No identifying details of the data behind the app (the note repository's owner/name).
 
-Refer to them by variable name (`GITEE_TOKEN`), or by pointer ("see `server/.dev.vars`").
+Refer to them by variable name (`REPO_TOKEN`), or by pointer ("see `server/.dev.vars`").
 
 This constraint usually improves the to-do: if you can't state it without leaking, it isn't an issue — it's a private note, and it belongs somewhere else.
 
