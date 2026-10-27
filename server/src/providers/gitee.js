@@ -127,14 +127,6 @@ export function createGitee(env) {
       await request(`${repoPath}/contents/${path}${qs}`, { method: 'DELETE' });
     },
 
-    /** 按指纹取正文（搜索的本地副本）。上游回 base64，编码字段是 `encoding`。 */
-    async blob(sha) {
-      const d = await request(`${repoPath}/git/blobs/${encodeURIComponent(sha)}`);
-      if (!d || typeof d.content !== 'string') throw upstream(200, d, '上游没有返回内容');
-      const content = d.encoding === 'utf-8' ? d.content : base64ToUtf8(d.content);
-      return { sha: d.sha || sha, content };
-    },
-
     /** 图片 / 附件。返回原样的流入，由 core 加 CORS 与缓存头。 */
     async raw(path) {
       const resp = await fetch(`${BASE}${repoPath}/raw/${path}?access_token=${env.REPO_TOKEN}`);

@@ -34,9 +34,7 @@ cd web && npm test                     # 前端：双链 / 引用解析等纯函
 node --test "scripts/**/*.test.mjs"    # 仓库工具：凭据检查的规则、部署脚本的说话方式
 ```
 
-三处都是 `node --test`，没有额外测试框架。后端那两个新测试文件（`server/src/providers/providers.test.mjs`、`server/src/core.test.mjs`）**不联网**：把 `fetch` 换成桩，断言的是「发出去的 URL / 方法 / body」与「回来的状态码变成哪个词」。真平台的响应另外实测（见下面「只存在于屏幕上的那些行为」）。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`、`web/src/note-sync.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
-
-**要改「首次备正文」的节奏，先跑量它的工具**：`node scripts/probe-upstream-rate.mjs`（`--limit 5` 冒烟）。它按客户端那套节奏直接打 Gitee 的 `git/blobs`，撞到第一次 403 就停、只量恢复时间，成绩单写到 `.scratch/`。上一轮的数字与结论住在 `docs/design/obsidian-mobile-web/spec.md` §4——**别凭「首次太慢」就往下调**，上游是按出口 IP 一刀切的，撞上了是整台机器二十分钟用不了（[#38](https://github.com/d1cky1990/GitObsidianLite/issues/38)）。
+三处都是 `node --test`，没有额外测试框架。后端那两个新测试文件（`server/src/providers/providers.test.mjs`、`server/src/core.test.mjs`）**不联网**：把 `fetch` 换成桩，断言的是「发出去的 URL / 方法 / body」与「回来的状态码变成哪个词」。真平台的响应另外实测（见下面「只存在于屏幕上的那些行为」）。前端里能单测的只有不碰 DOM 的部分，所以渲染与判定被刻意抽成纯函数（`web/src/wikilinks.js`、`web/src/vault-refs.js`、`web/src/tags.js`、`web/src/task-markers.js`、`web/src/tasks-query.js`、`web/src/frontmatter.js`、`web/src/search.js`）——想给某个行为加回归测试，先看它是不是还在纯函数里。
 
 单测盯的是纯函数；**一张票交付前还要在真语料上跑一遍**：从归档解出全库路径清单与每篇正文，`import` 被测模块**本身**整体渲染一遍，用改完的真实代码路径数结果。不要另写一份复刻被测逻辑的复算脚本——两边会一起错，而且错得看不出来。
 
@@ -154,7 +152,6 @@ node scripts/deploy.mjs
 - **代码确实传上去了，却一个网址都没给** → 这个账号还没注册过 `workers.dev` 子域（每个账号只注册一次）。脚本会停下来让你加 `--subdomain 你的名字` 重跑，因为这个名字会进网址、全球唯一，只能你自己选。**别把这一步当成「部署失败」**。
 - **`wrangler` 一启动就报找不到 `../web/dist`** → 静态资源目录还没有内容。先 `cd web && npm run build`；走部署脚本的话第 4 步会替你构建。
 - **页面打得开，所有接口却都是 404，报错里一个字都不提路由** → `web/dist` 里出现了一个叫 `api` 的东西（多半是有人往 `web/public/` 放了同名文件，Vite 会原样复制过去）。静态资源优先匹配，`/api/*` 就被挡在门外。机制写在 `server/wrangler.toml` 的 `[assets]` 注释里，`server/src/index.test.mjs` 有一条测试守着。
-- **把批大小调大之后，整趟同步每批都 400、一篇都取不到** → 服务端一批上限 20、上游并发 6，这两个数是平台免费档的「单次调用最多 50 个外发请求、同时最多 6 条连接」倒推出来的，不是调优值。原因写在 `server/src/core.js` 那两个常量上方。
 - **电脑上正常，手机上打不开** → 这不是配置没调好，而是地址本身的脾气，见下面「自行部署须知」的「访问方式」。
 - **第一次打开带图的笔记，像卡住了十几秒** → 冷启动要先拉全库名单、再逐张取图；同一篇再开是秒开。慢不构成故障（那条判据已撤销），数字记在 [#41](https://github.com/d1cky1990/GitObsidianLite/issues/41)。
 
@@ -185,7 +182,7 @@ node scripts/deploy.mjs --dry-run
 - **配置阶段要梯子一次**。`github.com`（网页、生成令牌、首次授权）在大陆不挂梯子实测不通，而 `api.github.com` 通——所以「接口回得正常」不能当作「配置这一步不用梯子」。**运行时不需要**：调用是服务端发起的，跑在云上。
 - **令牌用细粒度 PAT**：只授权这个仓库的 Contents: read and write（最小权限）；经典令牌勾 `repo` 也能用，但权限更大。Gitee 那边勾的是 `projects`。
 - **一份部署只连一个仓库**。想同时用 Gitee 和 GitHub 的两个笔记仓，部署两份——「前端每次请求带仓库标识」会推翻「owner / repo 固定在后端」这条安全线，代价不值。
-- **搜索两边都走客户端正文索引**，不用 GitHub 自带的代码搜索：换供应商不该换搜索体验，而它（仅默认分支、单文件 < 384 KB、10 次/分钟）并不更好。
+- **搜索不碰供应商的接口**：两边都只在本机那份全库名单上搜标题与路径。GitHub 自带的代码搜索不用——它（仅默认分支、单文件 < 384 KB、10 次/分钟）并不更好，而且换个供应商就换一套搜索体验。正文搜索不做，理由见 [ADR-0003](docs/adr/0003-no-vault-body-on-device.md)。
 - 两家的脾气差异（冲突、撞名、不存在的路径、删除参数位置）**全在适配层里吸收**，前端一个字不改——具体那张表见 [#17 §2](https://github.com/d1cky1990/GitObsidianLite/issues/17)，下面「写操作的脾气」只登记实测到的长相。
 
 ## 后端 API
@@ -198,7 +195,6 @@ node scripts/deploy.mjs --dry-run
 | GET | `/api/file?path=` | 读文件（utf8） |
 | PUT | `/api/file` | 写文件（body: path/message/content/sha）。**带 sha 是改，不带是建** |
 | DELETE | `/api/file` | 删文件（body: path/sha/message） |
-| POST | `/api/blobs` | **批量取正文**（body: `{files:[{path,sha}]}`，一批 ≤20）。单条失败只报单条 |
 | GET | `/api/raw?path=` | 图片 / 附件 raw |
 
 这一面**与连哪一家无关**：`server/src/core.js` 是这一面的唯一出处，两家的差异在 `server/src/providers/` 里吸收；改接口先看 core。

@@ -192,13 +192,6 @@ export function createGithub(env) {
       });
     },
 
-    async blob(sha) {
-      const d = await request(`${repoPath}/git/blobs/${encodeURIComponent(sha)}`);
-      if (!d || typeof d.content !== 'string') throw upstream(200, d, '上游没有返回内容');
-      const content = d.encoding === 'utf-8' ? d.content : base64ToUtf8(d.content);
-      return { sha: d.sha || sha, content };
-    },
-
     /** 附件 / 图片：让 GitHub 直接回原始字节（Accept raw），别走 base64 那一套。 */
     async raw(path) {
       const resp = await fetch(`${BASE}${contentsPath(path)}`, {

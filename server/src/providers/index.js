@@ -25,7 +25,6 @@ const FACTORIES = {
  *                                   ← 三种回答，别混：空文件是第一种（content 为空串）
  *   writeFile(path, {message, content, sha}) → {sha}              ← 带 sha 改、不带 sha 建
  *   deleteFile(path, {sha, message})         → 无返回
- *   blob(sha)                     → {sha, content}
  *   raw(path)                     → {status, contentType, body}   ← CORS 与缓存头由 core 加
  *
  * 失败一律抛 `RepoError`，`kind` 是 base.js 那四个词之一。

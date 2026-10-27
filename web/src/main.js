@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import {
-  listDir, listTree, listHead, readFile, writeFile, createFile, deleteFile, rawUrl, fetchBlobs,
+  listDir, listTree, listHead, readFile, writeFile, createFile, deleteFile, rawUrl,
 } from './api.js';
 import { installVaultImageRule, brokenImageHtml, runtimeFailureReason } from './vault-refs.js';
 import {
@@ -20,11 +20,9 @@ import { installTagRule } from './tags.js';
 // 声明区（#12 定稿 → #30）：文件开头那段 YAML 摘出来，画在正文上方一块可折叠的区域。
 // 它挂的是块级规则，所以顺序跟上面几条行内规则不相干；只要排在 `hr` 之前就行（见其注释）。
 import { installFrontmatterRule } from './frontmatter.js';
-// 搜索（#16 定稿 → #33）：入口常驻列表页顶部，默认只搜标题与路径——那靠的是上面
-// 那份全库名单，零新增请求。正文搜索背后是本地那份正文副本，规则定在 #32。
-import { searchTitles, searchBodies, normalizeQuery, bodyGroupView, coveredCount } from './search.js';
-import { createNoteStore } from './note-store.js';
-import { createBodySync } from './note-sync.js';
+// 搜索（#16 定稿 → #33）：入口常驻列表页顶部，**只搜标题与路径**——那靠的是上面
+// 那份全库名单，零新增请求。正文搜索与本机正文副本已在 2026-10-27 下架（`docs/adr/0003`）。
+import { searchTitles, normalizeQuery } from './search.js';
 import './style.css';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -145,6 +143,9 @@ window.addEventListener('need-password', showPasswordModal);
 const INDEX_CACHE_KEY = 'fileIndexCache.v2';
 const LEGACY_INDEX_CACHE_KEY = 'fileIndexCache.v1';
 let wikilinkIndexPromise = null;
+// 最近一次问到的仓库版本身份。切回标签页时拿它比一次——一样就什么都不做，
+// 不一样才重建清单（重建要 3~5 秒，不该每次切回来都付）。
+let lastHead = '';
 
 function readCachedIndex() {
   try {
@@ -182,11 +183,9 @@ function ensureIndex({ force = false } = {}) {
     // 1. 拿 HEAD sha，与缓存对比
     const cached = readCachedIndex();
     const head = await listHead();
-    knownHead = head.sha;
+    lastHead = head.sha;
     if (cached && cached.head === head.sha) {
       wikilinkIndex = hydrateWikilinkIndex(cached.index);
-      // HEAD 没变：本地正文副本也不用动（本地却没齐的话，同步自己会去拉清单）
-      syncBodies({ consider: true, reused: true }).catch(() => {});
       return wikilinkIndex;
     }
     // 2. HEAD 变了（或没有缓存），拉全量重建
@@ -194,9 +193,6 @@ function ensureIndex({ force = false } = {}) {
     const index = buildWikilinkIndex(data.tree);
     writeCachedIndex(head.sha, index);
     wikilinkIndex = index;
-    // 这棵树顺手留给正文同步用——它要的是同一份清单里的每文件 sha，别拉第二遍
-    freshTree = { head: data.head, tree: data.tree, at: Date.now() };
-    syncBodies({ consider: true, reused: false }).catch(() => {});
     return index;
   })();
   wikilinkIndexPromise = p;
@@ -246,134 +242,13 @@ function repaintWithIndex() {
   }
 }
 
-/* ---------- 搜索、设置、本地正文副本（#33） ---------- */
-//
-// 三样东西的边界要说清——它们长得像，生命周期却完全不同：
-//   - **全库名单**（上面那份 localStorage 索引）：路径清单，双链判定 / 图片反查 / 标题搜索共用，一直都在；
-//   - **本地正文副本**（本区块）：只在「搜正文」开着时存在，一篇一条；关掉即删，全库名单一根汗毛不动；
-//   - **本次会话打开的正文**（`state.file`）：打开一篇取一篇，冲突判定靠它带的那个版本身份。
-// 最危险的一步是把副本当成正文来源——那会让「远端已更新」的判定过期（#32 §1 已定：不这么做）。
 
-const PREFS_KEY = 'searchPrefs.v1';
-const DEFAULT_CAP_MB = 20;
+/* ---------- 搜索：在线才给结果 ---------- */
 
-function readPrefs() {
-  try {
-    const d = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
-    const capMB = Number(d && d.capMB);
-    return { body: !!(d && d.body), capMB: capMB > 0 ? capMB : DEFAULT_CAP_MB };
-  } catch (e) {
-    return { body: false, capMB: DEFAULT_CAP_MB };
-  }
-}
-
-// 开关与上限是**每台设备各自记**的（#32 §6），所以住 localStorage，不进那份正文库
-let prefs = readPrefs();
-
-function writePrefs(next) {
-  prefs = next;
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch (e) { /* 可能超配额，忽略 */ }
-}
-
-const noteStore = createNoteStore();
-
-// 全库正文的一次性内存副本（搜的时候逐篇扫）。同步一写完就置空——它和库里那份必须
-// 一起变，留着旧的就是「搜到的东西点开已经变了」。
-let bodyRecords = null;
-
-let lastSyncRender = 0;
-const bodySync = createBodySync({
-  store: noteStore,
-  loadTree: () => loadTreeForSync(),
-  fetchBlobs: (files) => fetchBlobs(files),
-  getCapBytes: () => prefs.capMB * 1024 * 1024,
-  onProgress: () => {
-    // 进度是逐篇报的（全库 857 篇就是 857 次），只有设置页有会变的东西，且压到 400ms 一次。
-    // 进度本身的唯一出处是 bodySync.state，这里不另存一份。
-    if (state.view === 'settings' && Date.now() - lastSyncRender > 400) {
-      lastSyncRender = Date.now();
-      render();
-    }
-  },
-});
-
-// 刚拉过的整棵树，给同步复用一次。打开应用时索引那次拉取（3~5 秒）与同步要的是同一棵树，
-// 不借这一次，同一分钟内就会拉两遍。
-let freshTree = null;
-let knownHead = '';
-
-async function loadTreeForSync() {
-  const t = freshTree;
-  freshTree = null;
-  if (t && Date.now() - t.at < 60000) return { head: t.head, tree: t.tree };
-  return listTree();
-}
-
-/** 远端一共几篇笔记——「共 Y 篇」与「备没备齐」都用它 */
-function remoteNoteCount() {
-  return wikilinkIndex ? wikilinkIndex.notePaths.length : 0;
-}
-
-/**
- * 本地正文**够不够拿来搜**：有就搜，哪怕只有一部分（#38 改的口径）。
- *
- * 原先这里是「备齐了才能搜」。按 #38 实测的上游限流（真跑一次全量要好几分钟，而手机上
- * 标签页常被系统冻住、说关就关），那条规矩的实际后果是：**正文搜索可能长期等于没有**。
- * 改成「到手的就能搜 + 明说覆盖了多少篇」——宁可带着一句限定，也不要整组空着。
- */
-function bodyUsable() {
-  return prefs.body && state.bodyCount > 0;
-}
-
-async function refreshBodyStats() {
-  try {
-    const i = await noteStore.index();
-    state.bodyCount = i.count;
-    state.bodyBytes = i.bytes;
-  } catch (e) {
-    state.bodyCount = 0;
-    state.bodyBytes = 0;
-  }
-}
-
-/** 后台同步不该打断正在写的人：编辑中重画会动光标（与 repaintWithIndex 同一条规矩） */
-function renderIfIdle() {
-  if (state.view === 'editor') return;
-  render();
-}
-
-/**
- * 跑一趟正文同步。`consider` 是顺风车：HEAD 没变、本地又齐了，就什么都不做（连清单都不拉）。
- * 收尾统一在这里——刷篇数、丢掉那份内存副本、必要时重画（结果页的「未就绪」得能自己变成结果）。
- */
-async function syncBodies({ consider = false, reused = false } = {}) {
-  if (!prefs.body) return;
-  let ran;
-  if (consider) ran = await bodySync.consider({ reused, noteCount: remoteNoteCount() });
-  else { await bodySync.sync(); ran = true; }
-  if (!ran) return;
-  bodyRecords = null;
-  await refreshBodyStats();
-  // 用户正停在结果页：本地那份要重读一遍，否则「正文」那一组会拿一份空的去算，
-  // 把「刚备好」显示成「正文里没有命中」。**只要手上有正文就重读**——现在允许
-  // 部分参与，备到一半也值得把新到的那几篇并进眼前的结果里。
-  if (state.view === 'list' && normalizeQuery(state.query) && bodyUsable()) await loadBodyRecords();
-  renderIfIdle();
-  const s = bodySync.state;
-  if (state.view === 'editor') return; // 别往正在写的人屏幕上弹东西
-  if (s.status === 'done' && s.total > 0) {
-    toast(state.query.trim() ? '本地正文已备好，正文里也能搜了' : '本地正文已备好');
-  } else if (s.status === 'capped') {
-    toast('到了容量上限，本地正文先备到这里');
-  } else if (s.status === 'blocked') {
-    toast('上游不让接着取了，本地正文先备到这里');
-  }
-}
-
-/* ---------- 在线 / 离线：搜索整体要求在线 ---------- */
-
-// #32 §7 定的：连那次很轻的版本身份请求都问不到，就当断网，**整个搜索不给用**——
-// 宁可保守，也不展示可能过时的结果。断网**不删**本地正文，它只是暂时不可用。
+// 搜的是手机上那份全库名单，而它是**每次打开应用时与远端对齐**的。连那次很轻的版本身份
+// 请求都问不到（= 断网）时，手上那份可能已经过期：搜得到的东西可能早被改名、删掉了。
+// 所以宁可保守，整个搜索先不给结果——不展示可能过时的名单，与「不许把不知道说成没有」
+// 是同一条规矩。断网不删任何东西，恢复联网再搜就是了。
 let onlineCache = { at: 0, ok: false };
 // 「在线」可以信 15 秒；「离线」只信 3 秒——刚恢复网络的人回头再搜一次，不该被上一秒的
 // 失败结论挡在门外。这两个数不一样是有意的。
@@ -394,118 +269,26 @@ async function checkOnline() {
 
 /* ---------- 结果 ---------- */
 
-/** 一次算清「该出哪几组、各出什么」，渲染只读它 */
-function searchState() {
-  const q = normalizeQuery(state.query);
-  if (!q) return null;
-  const usable = bodyUsable();
-  return {
-    q,
-    indexReady: !!wikilinkIndex,
-    titles: wikilinkIndex ? searchTitles(wikilinkIndex.notePaths, q) : [],
-    bodyLoaded: usable && !!bodyRecords,
-    bodies: usable && bodyRecords ? searchBodies(bodyRecords, q) : [],
-    ...bodyCoverage(),
-  };
-}
-
-/**
- * 「只备了 X / 共 Y 篇」里的两个数。
- *
- * X 取**交集**（远端有、本地也有），不是本地条数——本地可能还留着远端已删的那一条，
- * 拿条数比会假对齐，然后就敢说「正文里没有命中」（见 `search.js` 的 `coveredCount`）。
- * 名单或本地副本还没到时给不出 X，退回「本地存了几条」这个已知数，并靠 `total`
- * 为 0 让结论落到「说不清」（`unknown-scope`）而不是编一个假对齐。
- */
-function bodyCoverage() {
-  const total = remoteNoteCount();
-  if (!bodyRecords || !wikilinkIndex) return { bodyCovered: state.bodyCount, bodyTotal: total };
-  return {
-    bodyCovered: coveredCount(wikilinkIndex.notePaths, bodyRecords.map((r) => r.path)),
-    bodyTotal: total,
-  };
-}
-
 function resultRow(r) {
   return '<a class="res" href="#/edit/' + encodeURIComponent(r.path) + '"' +
     ' data-hit="' + esc(r.path) + '" data-hitq="' + esc(normalizeQuery(state.query)) + '">' +
     '<span class="res-title"><span class="ic md">¶</span><span class="nm">' + esc(r.name) + '</span>' +
     (r.dir ? '<span class="res-dir">' + esc(r.dir) + '</span>' : '') + '</span>' +
-    (r.snippet
-      ? '<span class="res-snip">' + esc(r.snippet.before) + '<mark>' + esc(r.snippet.match) + '</mark>' +
-        esc(r.snippet.after) + '</span>'
-      : '') +
     '</a>';
 }
 
 function renderResults() {
-  const s = searchState();
-  if (!s) return '';
+  const q = normalizeQuery(state.query);
+  if (!q) return '';
   // 断网 / 还没问清网络：**不出结果**，也不说「没找到」——那会把一次网络故障说成没有这篇笔记
   if (state.online === null) return '<div class="res-status dim">正在确认网络…</div>';
   if (state.online === false) return '<div class="res-status dim">连不上服务端，搜索暂时用不了。恢复联网后再试。</div>';
 
-  let html = '<div class="res-group">' +
-    '<div class="res-head">标题 / 路径<span class="res-n">' + s.titles.length + '</span></div>';
-  html += s.titles.length
-    ? s.titles.map(resultRow).join('')
-    : '<div class="res-empty dim">' + (s.indexReady ? '标题和路径里都没有' : '文件名单还在加载…') + '</div>';
-  html += '</div>';
-
-  // 开关没开就**不出现正文那一栏**：一栏永远写着「去设置里打开」只是白占屏幕。
-  // 想开的人会在设置里看到那个开关（那里才是它的说明该待的地方）。
-  if (!prefs.body) return html;
-
-  html += '<div class="res-group"><div class="res-head">正文' +
-    (s.bodyLoaded ? '<span class="res-n">' + s.bodies.length + '</span>' : '') + '</div>';
-  // 该说什么、按什么顺序说，全在 `bodyGroupView` 里（纯函数，单测盯着它）。
-  // 这里只管把句子摆到位置上：覆盖范围要在结果**之前**，否则等于让人先读完结果
-  // 再发现它是残缺的。只有「用这句话顶替结果」的两种 kind，才把 note 摆到空位上。
-  const g = bodyGroupView({
-    enabled: true,
-    covered: s.bodyCovered,
-    total: s.bodyTotal,
-    loaded: s.bodyLoaded,
-    hitCount: s.bodies.length,
-  });
-  const noteInEmptySlot = g.kind === 'partial-empty' || (g.kind === 'unknown-scope' && !s.bodies.length);
-  if (g.note && !noteInEmptySlot) html += '<div class="res-note dim">' + esc(g.note) + '</div>';
-  if (g.kind === 'no-copy') {
-    // 一篇都还没到手：这时候搜正文必然一个都搜不到，说清楚为什么（不是「没找到」）
-    html += '<div class="res-note dim">' + esc(bodyNotReadyText()) + '</div>';
-  } else if (g.kind === 'loading') {
-    html += '<div class="res-note dim">正在读本地正文…</div>';
-  } else if (s.bodies.length) {
-    html += s.bodies.map(resultRow).join('');
-  } else if (g.kind === 'empty') {
-    html += '<div class="res-empty dim">正文里没有命中</div>';
-  } else if (g.note) {
-    // 没备齐时**不许说「没有命中」**：那会把「还没备到」说成「这篇不存在」——
-    // 与 §8 的中性态同一条规矩，只是从「整组不出」退一步到「出了但说清范围」。
-    html += '<div class="res-empty dim">' + esc(g.note) + '</div>';
-  }
-  html += '</div>';
-  return html;
-}
-
-// 一篇正文都还没有时的那句说明。**它只在 bodyUsable() 为假时出现**——只要手上有一篇，
-// 正文组就会正常出结果（外加一行覆盖范围），不再整组空着。
-function bodyNotReadyText() {
-  const s = bodySync.state;
-  const total = remoteNoteCount();
-  if (!total) return '本地正文还没开始备（文件名单还在加载）。';
-  if (s.status === 'blocked') {
-    return '一篇都还没备到：上游不让接着取了（' + s.error + '），下次打开会接着备。';
-  }
-  if (s.status === 'error') return '本地正文没备起来：' + s.error + '，下次打开会再试。';
-  if (s.status === 'capped') {
-    return '一篇都还没备到：到了容量上限就停了（去设置里把上限放大）。';
-  }
-  if (s.status === 'running') {
-    return '本地正文正在备（已 0 / 共 ' + total + ' 篇），到手一篇就能搜一篇。';
-  }
-  // 没在跑、手里又一篇都没有：别把「没开始」说成「正在备」——那是两种不同的下一步
-  return '本地正文还没备上（已 0 / 共 ' + total + ' 篇），下次打开会再试。';
+  // 只有一组结果，就不必再挂一个分组标题当空壳——列表本身已经说明它是什么
+  const titles = wikilinkIndex ? searchTitles(wikilinkIndex.notePaths, q) : [];
+  if (titles.length) return titles.map(resultRow).join('');
+  return '<div class="res-empty dim">' +
+    (wikilinkIndex ? '标题和路径里都没有' : '文件名单还在加载…') + '</div>';
 }
 
 /* ---------- 搜索框 ---------- */
@@ -525,10 +308,9 @@ let searchSeq = 0;
 function listShellHtml() {
   return '<header class="bar">' +
     '<div class="search-row">' +
-    '<input id="q" class="search-input" type="text" placeholder="搜索笔记"' +
+    '<input id="q" class="search-input" type="text" placeholder="只搜标题与路径"' +
     ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
     '<button class="search-clear" id="q-clear" data-act="clearQuery" aria-label="清空搜索">×</button>' +
-    '<button class="gear" data-act="openSettings">设置</button>' +
     '</div>' +
     '<span class="crumbs" id="list-crumbs"></span>' +
     '</header>' +
@@ -561,8 +343,8 @@ function wireSearch() {
 }
 
 /**
- * 词变了：先把「正在确认网络」画出来，再那次很轻的请求。**每打一个字都重画**——
- * 结果是从手上的数据算出来的，不发请求（正文搜索扫的也是本地副本）。
+ * 词变了：先把「正在确认网络」画出来，再发那次很轻的请求。**每打一个字都重画**——
+ * 结果是从手上那份名单算出来的，不比词多要一次数据。
  */
 function onQueryChanged() {
   const seq = ++searchSeq;
@@ -576,15 +358,9 @@ function onQueryChanged() {
     // 不然断网时打开的那一页，恢复联网后搜索会一直空着（名单永远停在中性态）。
     // 只在确认在线时催：离线时每个字都去拉一遍清单，是把一次故障放大成无数次。
     if (ok && !wikilinkIndex) ensureIndex().catch(() => {});
-    if (ok && bodyUsable()) await loadBodyRecords();
     if (seq !== searchSeq) return;
     render();
   })();
-}
-
-async function loadBodyRecords() {
-  if (bodyRecords) return;
-  try { bodyRecords = await noteStore.allNotes(); } catch (e) { bodyRecords = []; }
 }
 
 /* ---------- 点进去落在命中那一段 ---------- */
@@ -647,122 +423,6 @@ function applyPendingHit() {
   mark.scrollIntoView({ block: 'center' });
 }
 
-/* ---------- 设置页 ---------- */
-
-function settingsBackHref() {
-  return '#/dir/' + encodeURIComponent(state.settingsFrom);
-}
-
-function mb(bytes) {
-  return (bytes / 1024 / 1024).toFixed(1);
-}
-
-function syncLine() {
-  const s = bodySync.state;
-  const total = remoteNoteCount();
-  if (!prefs.body) return '搜正文没打开，本机没存任何正文。';
-  if (s.status === 'running') return '正在备：已备 ' + s.done + ' / 共 ' + s.total + ' 篇…';
-  if (s.status === 'capped') return '到了容量上限，先备到这里。放大上限后下次打开会接着备。';
-  if (s.status === 'blocked') {
-    return '备到 ' + state.bodyCount + ' / 共 ' + total + ' 篇时上游不让接着取了（' + s.error +
-      '）。到手的留着，下次打开会接着备。';
-  }
-  if (s.status === 'error') return '没能备起来：' + s.error;
-  if (total && state.bodyCount >= total) return '已备好 ' + state.bodyCount + ' 篇。';
-  return '已备 ' + state.bodyCount + ' / 共 ' + total + ' 篇。' +
-    (s.failed ? ' 有 ' + s.failed + ' 篇没取到，下次打开会自动再试。' : '');
-}
-
-function renderSettings() {
-  const capBytes = prefs.capMB * 1024 * 1024;
-  const over = state.bodyBytes > capBytes;
-  app.innerHTML =
-    '<header class="bar"><a class="back" href="' + settingsBackHref() + '">‹ 返回</a>' +
-    '<span class="title">设置</span></header>' +
-    '<main class="editor-body settings">' +
-    '<div class="set-block">' +
-    '<label class="set-row"><span class="set-name">搜正文</span>' +
-    '<input type="checkbox" id="set-body"' + (prefs.body ? ' checked' : '') + '></label>' +
-    '<div class="set-hint">打开后，本机会在后台把全库笔记的正文存一份（只给搜索用），' +
-    '之后按每篇的版本身份增量补。每台设备各自记；关掉立刻删干净，全库名单不受影响。</div>' +
-    '</div>' +
-    '<div class="set-block">' +
-    '<label class="set-row"><span class="set-name">容量上限</span>' +
-    '<input id="set-cap" class="set-num" type="number" min="1" step="1" value="' + prefs.capMB + '">' +
-    '<span class="set-unit">MB</span></label>' +
-    '<div class="set-hint">已用 ' + mb(state.bodyBytes) + ' MB / 上限 ' + prefs.capMB + ' MB' +
-    (over ? '（已超出，本地正文不再新增）' : '') + '</div>' +
-    '<div class="set-hint">上限只拦新增，不会为了腾地方删已有的。要清空请按下面那个按钮。</div>' +
-    '</div>' +
-    '<div class="set-block">' +
-    '<div class="set-hint">' + esc(syncLine()) + '</div>' +
-    '<button class="wide danger" data-act="clearBodies">清空本地正文</button>' +
-    '</div>' +
-    '</main>' +
-    renderOverlays() + renderToast();
-
-  wireDialog();
-  const cb = document.getElementById('set-body');
-  if (cb) cb.addEventListener('change', onToggleBody);
-  const cap = document.getElementById('set-cap');
-  if (cap) cap.addEventListener('change', onCapChange);
-}
-
-async function onToggleBody() {
-  const on = !prefs.body;
-  writePrefs({ ...prefs, body: on });
-  if (!on) {
-    bodyRecords = null;
-    state.busy = true; render();
-    try { await noteStore.clear(); } catch (e) { toast('没能清干净：' + e.message); }
-    await refreshBodyStats();
-    state.busy = false; render();
-    toast('已关掉搜正文，本机那份正文删干净了');
-    return;
-  }
-  render();
-  toast('开始在后台备正文');
-  await syncBodies();
-}
-
-function onCapChange(e) {
-  const n = Math.max(1, Math.round(Number(e.target.value) || 0));
-  writePrefs({ ...prefs, capMB: n });
-  render();
-}
-
-function askClearBodies() {
-  state.dialog = {
-    type: 'confirm', action: 'clearBodies',
-    title: '清空本地正文？',
-    body: '清掉的是本机这份正文副本（只给搜索用）。<b>仓库里的笔记一个字都不动</b>，' +
-      '开关也还开着——下次打开会重新备一遍。',
-    okLabel: '清空', danger: true,
-  };
-  render();
-}
-
-async function doClearBodies() {
-  closeOverlays();
-  bodyRecords = null;
-  state.busy = true; render();
-  try {
-    await noteStore.clear();
-    await refreshBodyStats();
-    toast('本地正文已清空');
-  } catch (e) {
-    toast('没清掉：' + e.message);
-  }
-  state.busy = false; render();
-}
-
-function openSettings() {
-  state.settingsFrom = state.view === 'editor' ? dirOf(state.path) : state.path;
-  if (location.hash === '#/settings') { state.view = 'settings'; render(); }
-  else location.hash = '#/settings';
-  refreshBodyStats().then(() => { if (state.view === 'settings') render(); });
-}
-
 /* ---------- 冲突合并：字符级 diff ---------- */
 function diffSeq(a, b) {
   const m = a.length, n = b.length;
@@ -819,7 +479,7 @@ function computeMerged(conflict) {
 }
 
 const state = {
-  view: 'list', // 'list' | 'editor' | 'settings'
+  view: 'list', // 'list' | 'editor'
   path: '', // 当前目录（list）或文件路径（editor）
   entries: [],
   file: null, // { path, sha, content }
@@ -841,12 +501,9 @@ const state = {
   // ---- 进编辑态之前那次远端核对（#34） ----
   editChecking: false, // 正在读最新版，按钮显示忙态；也当连点锁
 
-  // ---- 搜索与设置（#33） ----
+  // ---- 搜索（#33） ----
   query: '', // 搜索框里的词（空 = 正常翻目录）
   online: null, // null = 还没问过；true / false = 那次很轻的版本身份请求的结果
-  settingsFrom: '', // 进设置页之前所在的目录，「返回」回到那里
-  bodyCount: 0, // 本地正文副本已有几篇
-  bodyBytes: 0, // 已用多少字节（上限那一行要它）
   pendingHit: null, // { path, query } —— 刚点的搜索结果，打开后要滚到命中那一段
   hitMark: null, // 已经滚过去的那处，补渲染时要把它画回来
 };
@@ -871,10 +528,7 @@ function toast(msg, action = null) {
 
 function navigate() {
   const hash = location.hash.slice(1) || '';
-  if (hash === '/settings') {
-    state.view = 'settings';
-    render();
-  } else if (hash.startsWith('/edit/')) {
+  if (hash.startsWith('/edit/')) {
     openFile(decodeURIComponent(hash.slice(6)));
   } else if (hash.startsWith('/dir/')) {
     state.view = 'list';
@@ -1046,7 +700,6 @@ async function saveCopy(which) {
 
 function render() {
   if (state.view === 'editor') renderEditor();
-  else if (state.view === 'settings') renderSettings();
   else renderList();
 }
 
@@ -1290,7 +943,6 @@ async function confirmDialog() {
   if (!d || d.type !== 'confirm') return;
   if (d.action === 'delete') await doDelete(d.subject);
   else if (d.action === 'move') await doMove(d.subject, d.to);
-  else if (d.action === 'clearBodies') await doClearBodies();
 }
 
 /* ---------- 新建 ---------- */
@@ -1765,10 +1417,8 @@ document.addEventListener('click', async (e) => {
       case 'submitDialog': submitDialog(); break;
       case 'confirmDialog': confirmDialog(); break;
       case 'moveHere': pickerMoveHere(); break;
-      // ---- 搜索与设置（#33） ----
-      case 'openSettings': openSettings(); break;
+      // ---- 搜索（#33） ----
       case 'clearQuery': state.query = ''; onQueryChanged(); break;
-      case 'clearBodies': askClearBodies(); break;
       case 'toastAction': {
         const t = state.toastAction;
         state.toastAction = null;
@@ -1836,12 +1486,9 @@ async function recheckRepo() {
     return;
   }
   onlineCache = { at: Date.now(), ok: true };
-  if (head.sha === knownHead) {
-    syncBodies({ consider: true, reused: true }).catch(() => {});
-    return;
-  }
-  knownHead = head.sha;
-  ensureIndex({ force: true }).catch(() => {}); // 清单变了要重建，它会顺带踢一次正文同步
+  if (head.sha === lastHead) return;
+  lastHead = head.sha;
+  ensureIndex({ force: true }).catch(() => {}); // 清单变了要重建
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') recheckRepo();
@@ -1850,5 +1497,16 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('hashchange', navigate);
 resetFab();
 navigate();
-// 本地已经存着正文的话，篇数得先亮出来（「共 Y 篇」要等名单，那一半随索引到位补上）
-if (prefs.body) refreshBodyStats().then(renderIfIdle);
+
+/* ---------- 一次性善后：本机那份正文副本随功能一起下架（#44 / ADR-0003） ---------- */
+//
+// 老设备上它还稳稳占着几 MB。**不是「不再读」，是「不再占地方」**：开一次应用就删掉。
+// 这件事做成幂等的——库里没有那个数据库时 deleteDatabase 直接成功，所以每次启动做一遍
+// 没有副作用。万一有另一个标签页还开着旧版、握着连接，按 IndexedDB 的规定删除会排在它
+// 后面（这段时间不阻塞启动，我们也不等结果），那边一关就清干净。
+// 偏好键（每台设备各记的那个开关与上限）一并去掉：功能没了，留着这一项只会让人以为能用。
+function dropBodyStore() {
+  try { indexedDB.deleteDatabase('gitobsidianlite'); } catch (e) { /* 没有 indexedDB 就算了 */ }
+  try { localStorage.removeItem('searchPrefs.v1'); } catch (e) { /* 忽略 */ }
+}
+dropBodyStore();

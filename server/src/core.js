@@ -111,85 +111,6 @@ async function writeFailure(e, repo, p) {
   return json(out, 409);
 }
 
-/* ---------- 批量取正文（搜索用，#33） ---------- */
-
-// 一批最多几篇。**20 是被平台限制压下来的，不是调优，别顺手改回去**（#40）。
-//
-// Cloudflare Workers 免费档规定「一次调用最多 50 个外发请求」。这个循环里每篇正文
-// 就是一个外发请求，所以一批 50 篇正好把额度用满——上游只要多回一次重定向，
-// 第 51 个请求就直接失败，而且失败的是排在最后的那几篇，看起来像「随机丢笔记」。
-// 硬上限是 50，取 20 是为了给重定向（以及将来可能加的探测请求）留余量。
-//
-// 分批本身还有第二个理由：它是留给手机端断点续传的粒度（取到一篇存一篇，关页面
-// 最多损失还没到手的那几篇）。超过就报错，别让一次请求变成无上限的活。
-const MAX_BLOB_BATCH = 20;
-
-// 上游并发。**6 是平台上限，不是调优**：Workers 规定「一次调用同时最多 6 条连接」，
-// 第 7 条开始排队（排队不报错，只是白等）。旧值 8 是 #16 在迁移前那个平台上实测的档
-// （8 并发取 100 篇 24 秒，零失败、零限流），那份成绩单在 Workers 上不成立。
-const BLOB_CONCURRENCY = 6;
-
-/** 上游偶尔不回 JSON：被 WAF 拦下时回的是一整页 HTML（实测 2026-10-02，见下面 fetchBlobs 的注释）。 */
-function blobErrorText(e) {
-  if (typeof e.body === 'string' && /^\s*</.test(e.body)) {
-    return `上游回了 ${e.status}，且不是接口的错误体（整页 HTML，看着像被安全策略拦了）`;
-  }
-  return e.message || `上游回了 ${e.status}`;
-}
-
-/**
- * 按指纹批量取正文。上游动作是 `blob(sha)`（两家都认 sha，不认路径）。
- *
- * **单条失败只报单条**：整批不能因为一篇被别处删了、或一个 sha 拼错了就全废——
- * 那样手机端每次重试都会在同一条上再摔一次，永远备不完。失败的按原样回给调用方，
- * 由它决定怎么办（跳过、重试、还是让用户知道）。
- *
- * **⚠️ 上游会限流，而且是分不出状态码的那种**：2026-10-02 拿本机对真仓库实测，
- * 连续取到第 600 多篇时开始回 **403 + 百度云 WAF 的拦截页**，之后连 `/api/head`
- * 都一起被拦（同一个出口 IP）。也就是说「全库拉一遍」这件事**不能一波猛冲**，
- * 客户端得自己控速、并在撞墙时停下来。`BLOB_CONCURRENCY` 只管一批内的并发，
- * 批与批之间的节奏在客户端（见 `web/src/note-sync.js` 的 `DEFAULT_BATCH_GAP_MS`）。
- *
- * **那之后量过两次，控速是够的，余量还很大**（#38）：按客户端的默认节奏从零跑完一次
- * 全库零 403；再逐档加压，撞墙线落在**约 600 次/分钟**，而默认那一档约 188 次/分钟。
- * 数字与条件住在 `docs/design/obsidian-mobile-web/spec.md` §4，测法在
- * `scripts/probe-upstream-rate.mjs`。但两次都只覆盖了一条出口，而线上经 Workers 出去是
- * 另一批 IP——所以这条路上的节奏**仍然按客户端控住**，别在服务端这边顺手加并发或加批大小。
- *
- * @param {ReturnType<typeof createProvider>} repo
- * @param {{path:string, sha:string}[]} files
- * @returns {Promise<{blobs:{path:string,sha:string,content:string}[], failed:{path:string,sha:string,error:string}[]}>}
- */
-async function fetchBlobs(repo, files) {
-  const out = new Array(files.length);   // 按下标回填，输出顺序与请求一致
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < files.length) {
-      const i = cursor++;
-      const f = files[i];
-      const p = f && f.path, sha = f && f.sha;
-      if (!p || !sha) { out[i] = { ok: false, path: p || '', sha: sha || '', error: '缺少 path 或 sha' }; continue; }
-      try {
-        const d = await repo.blob(sha);
-        out[i] = { ok: true, path: p, sha: d.sha || sha, content: d.content };
-      } catch (e) {
-        if (!(e instanceof RepoError)) throw e;
-        // 文件被删了（sha 查不到）回 404 `Blob not found`——这条要如实说，别吞成空内容
-        out[i] = { ok: false, path: p, sha, error: blobErrorText(e) };
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(BLOB_CONCURRENCY, files.length) }, worker));
-
-  const blobs = [], failed = [];
-  for (const r of out) {
-    if (!r) failed.push({ path: '', sha: '', error: '未取到' });
-    else if (r.ok) blobs.push({ path: r.path, sha: r.sha, content: r.content });
-    else failed.push({ path: r.path, sha: r.sha, error: r.error });
-  }
-  return { blobs, failed };
-}
-
 /* ---------- 路由 ---------- */
 
 async function routeApi(request, env, url) {
@@ -257,17 +178,6 @@ async function routeApi(request, env, url) {
         notFound: '文件不在了（可能刚被别处删掉）',
       });
     }
-  }
-
-  // 批量取正文（搜索的本地副本，见 #33）。按指纹取，不按路径——两家认的都是 sha
-  if (path === '/api/blobs' && request.method === 'POST') {
-    const body = await request.json().catch(() => ({}));
-    const files = body && body.files;
-    if (!Array.isArray(files) || !files.length) return json({ error: '缺少 files 数组' }, 400);
-    if (files.length > MAX_BLOB_BATCH) {
-      return json({ error: `一次最多 ${MAX_BLOB_BATCH} 篇，多的分几批` }, 400);
-    }
-    return json(await fetchBlobs(repo, files));
   }
 
   // 图片 / 附件 raw（代理转发）

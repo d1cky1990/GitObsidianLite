@@ -110,13 +110,13 @@ test('Gitee：删除参数在 query，成功只看得到「删掉了」', async 
   assert.match(calls[0].url, /message=%E5%88%A0%E6%8E%89%20a%20b/);
 });
 
-test('Gitee：blob 的 base64 带换行也能解出原文', async (t) => {
+test('Gitee：contents 回的 base64 带换行也能解出原文', async (t) => {
   const b64 = Buffer.from('中文内容', 'utf8').toString('base64');
   const broken = b64.slice(0, 4) + '\n' + b64.slice(4);
   stubFetch(t, [
-    { match: (c) => c.url.includes('/git/blobs/'), reply: () => ({ body: { sha: 'b1', encoding: 'base64', content: broken } }) },
+    { match: (c) => c.url.includes('/contents/'), reply: () => ({ body: { path: 'a.md', sha: 'b1', content: broken } }) },
   ]);
-  const r = await createGitee(ENV).blob('b1');
+  const r = await createGitee(ENV).readFile('a.md');
   assert.equal(r.content, '中文内容');
 });
 
@@ -243,7 +243,7 @@ test('GitHub：上游已经给了具体类型时不乱改（只补笼统的那�
 /* ---------------- 选择哪一家 ---------------- */
 
 test('createProvider：按 REPO_PROVIDER 挑，两家的动作齐全', () => {
-  const actions = ['head', 'listDir', 'tree', 'readFile', 'writeFile', 'deleteFile', 'blob', 'raw'];
+  const actions = ['head', 'listDir', 'tree', 'readFile', 'writeFile', 'deleteFile', 'raw'];
   for (const name of ['gitee', 'github']) {
     const repo = createProvider({ ...ENV, REPO_PROVIDER: name });
     assert.equal(repo.name, name);

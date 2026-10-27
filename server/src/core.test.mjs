@@ -134,37 +134,16 @@ for (const [name, env] of [['Gitee', ENV_GITEE], ['GitHub', ENV_GITHUB]]) {
   });
 }
 
-/* ---------------- 批量取正文：单条失败不拖垮整批 ---------------- */
+/* ---------------- 批量取正文这条接口已经没有了（#44 / ADR-0003） ---------------- */
 
-test('批量取正文：一篇被删（404）只报那一条，其余照常回', async (t) => {
-  stubFetch(t, [
-    {
-      match: (c) => c.url.includes('/git/blobs/good1'),
-      reply: () => ({ body: { sha: 'good1', encoding: 'base64', content: b64('正文') } }),
-    },
-    { match: (c) => c.url.includes('/git/blobs/gone1'), reply: () => ({ status: 404, body: { message: 'Not Found' } }) },
-  ]);
+test('批量取正文：路由不存在，回 404 而不是被静默处理', async (t) => {
+  stubFetch(t, []); // 一个上游请求都不该发出去
   const resp = await handleApi(
     new Request('http://x/api/blobs', {
       method: 'POST',
-      body: JSON.stringify({ files: [{ path: 'a.md', sha: 'good1' }, { path: 'b.md', sha: 'gone1' }] }),
+      body: JSON.stringify({ files: [{ path: 'a.md', sha: 's1' }] }),
     }),
     ENV_GITEE
   );
-  const body = await resp.json();
-  assert.equal(body.blobs.length, 1);
-  assert.equal(body.blobs[0].content, '正文');
-  assert.equal(body.failed.length, 1);
-  assert.equal(body.failed[0].path, 'b.md');
-});
-
-test('批量取正文：超过一批上限就报错，不偷偷截断', async (t) => {
-  stubFetch(t, []);
-  const files = Array.from({ length: 21 }, (_, i) => ({ path: `n${i}.md`, sha: `s${i}` }));
-  const resp = await handleApi(
-    new Request('http://x/api/blobs', { method: 'POST', body: JSON.stringify({ files }) }),
-    ENV_GITEE
-  );
-  assert.equal(resp.status, 400);
-  assert.match((await resp.json()).error, /最多 20 篇/);
+  assert.equal(resp.status, 404);
 });
