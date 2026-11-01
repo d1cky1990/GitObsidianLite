@@ -13,6 +13,7 @@
 | 为什么这样设计——技术栈、架构、API 面、鉴权、托管约束 | `docs/design/obsidian-mobile-web/spec.md` |
 | 考虑过并否决的选项 | `docs/design/obsidian-mobile-web/`（`map.md`、`issues/`、`research/`）—— **历史快照，只读** |
 | 已定下、不该重开的决定 | `docs/adr/` |
+| 一个东西叫什么、不叫什么 | `GLOSSARY.md` |
 | 怎么跑、怎么测、怎么部署，以及已知的坑 | `README.md` |
 | 必须由用户本人点网页的那几步（注册账号、生成令牌） | `docs/guide/manual-steps.md` |
 | 未完成的工作与进行中的决定 | GitHub Issues —— 见下文 |
