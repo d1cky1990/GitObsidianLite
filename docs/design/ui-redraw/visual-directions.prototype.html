@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>界面重画 · 三个视觉方向（抛弃式原型）</title>
+<!-- PROTOTYPE ONLY: 三个方向的六张手机样张。?variant=paper|clear|system&view=reading|tree -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #dcdcdc;
+    color: #171717;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button, input { font: inherit; }
+  button { cursor: pointer; }
+  svg { display: block; }
+  [hidden] { display: none !important; }
+
+  .stage {
+    width: 390px;
+    height: 844px;
+    margin: 18px auto 122px;
+    position: relative;
+    overflow: hidden;
+    background: var(--page);
+    color: var(--text);
+    box-shadow: 0 12px 50px rgba(0,0,0,.22);
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-reading: var(--font-ui);
+  }
+
+  /* A：纸页感。字与留白建立层级，细线只起分隔作用。 */
+  .stage[data-variant="paper"] {
+    --page: #f6f2e9;
+    --surface: #fbf8f1;
+    --sidebar: #efe9dc;
+    --text: #302d27;
+    --muted: #837b6c;
+    --faint: #aaa091;
+    --line: #d9d0c0;
+    --accent: #8b5e34;
+    --accent-soft: #e8dcc8;
+    --selected: #e3d7c2;
+    --current: #f8efdD;
+    --chip: #ebe2d2;
+    --mask: rgba(42,36,27,.24);
+    --font-reading: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+    --radius: 3px;
+  }
+
+  /* B：清爽白底。没有纸色与卡片，字重、字号、蓝色承担层级。 */
+  .stage[data-variant="clear"] {
+    --page: #ffffff;
+    --surface: #ffffff;
+    --sidebar: #f7f8fa;
+    --text: #17202a;
+    --muted: #6c7682;
+    --faint: #9aa3ad;
+    --line: #e8ebef;
+    --accent: #1769d2;
+    --accent-soft: #eaf2fd;
+    --selected: #e5effc;
+    --current: #eef5ff;
+    --chip: #eff1f4;
+    --mask: rgba(15,23,32,.28);
+    --radius: 8px;
+  }
+
+  /* C：系统工具感。灰色工作台托住白色面板，控件与分组更明确。 */
+  .stage[data-variant="system"] {
+    --page: #eef0f3;
+    --surface: #ffffff;
+    --sidebar: #f5f6f8;
+    --text: #202227;
+    --muted: #6f747d;
+    --faint: #9ba0a8;
+    --line: #dfe2e7;
+    --accent: #315efb;
+    --accent-soft: #e9edff;
+    --selected: #e2e7f5;
+    --current: #dfe6ff;
+    --chip: #edf0f4;
+    --mask: rgba(17,20,25,.34);
+    --radius: 12px;
+  }
+
+  .reading { height: 100%; overflow-y: auto; background: var(--page); }
+  .topbar {
+    height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 3;
+  }
+  .icon-btn, .edit-btn, .close-btn, .new-btn, .settings-btn {
+    border: 0;
+    color: var(--text);
+    background: transparent;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .icon-btn svg, .close-btn svg, .settings-btn svg { width: 22px; height: 22px; }
+  .doc-heading { flex: 1; min-width: 0; padding: 0 5px; }
+  .doc-kicker { font: 11px/1.3 var(--font-ui); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc-title { font: 600 14px/1.5 var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .edit-btn { color: var(--accent); font-size: 14px; font-weight: 600; padding: 0 8px; }
+
+  .article { padding: 24px 22px 130px; font-family: var(--font-reading); }
+  .article h1 { margin: 0 0 18px; font-size: 27px; line-height: 1.35; letter-spacing: -.02em; }
+  .article p { margin: 0 0 20px; font-size: 16px; line-height: 1.85; }
+  .article h2 { margin: 28px 0 12px; font-size: 19px; line-height: 1.45; }
+  .wikilink { color: var(--accent); text-decoration: none; }
+  .fm { margin: 0 0 24px; color: var(--muted); font: 14px/1.65 var(--font-ui); }
+  .fm-row { display: flex; gap: 16px; align-items: baseline; }
+  .fm-key { min-width: 46px; }
+  .tag {
+    display: inline-block;
+    margin: 0 3px;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: var(--chip);
+    color: var(--muted);
+    font: 13px/1.7 var(--font-ui);
+    white-space: nowrap;
+    vertical-align: 1px;
+  }
+  .tasks { list-style: none; padding: 0; margin: 0; }
+  .task { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 15px; font-size: 15px; line-height: 1.75; }
+  .check {
+    appearance: none;
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin: 4px 0 0;
+    border: 1.5px solid var(--muted);
+    border-radius: 4px;
+    background: var(--surface);
+    position: relative;
+  }
+  .check:checked { background: var(--accent); border-color: var(--accent); }
+  .check:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 1px;
+    width: 5px; height: 10px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .done .task-text { color: var(--muted); text-decoration: line-through; }
+  .done .tag { text-decoration: none; }
+  .task-text code { font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--chip); padding: 2px 4px; border-radius: 4px; }
+  .date { color: var(--muted); font: 12px/1.7 var(--font-ui); white-space: nowrap; }
+  .omission { border-top: 1px solid var(--line); margin: 24px 0; }
+
+  /* 同一套 DOM，三种层级做法。 */
+  .stage[data-variant="paper"] .topbar { background: var(--page); border-bottom: 0; padding-top: 12px; }
+  .stage[data-variant="paper"] .doc-heading { text-align: center; }
+  .stage[data-variant="paper"] .doc-kicker { display: none; }
+  .stage[data-variant="paper"] .doc-title { font-family: var(--font-reading); font-weight: 500; }
+  .stage[data-variant="paper"] .article { padding-top: 20px; }
+  .stage[data-variant="paper"] .article h1 { font-weight: 600; }
+  .stage[data-variant="paper"] .fm { border-left: 2px solid var(--line); padding: 5px 0 5px 12px; }
+  .stage[data-variant="paper"] .article h2 { border-top: 1px solid var(--line); padding-top: 20px; font-weight: 600; }
+  .stage[data-variant="paper"] .icon-btn, .stage[data-variant="paper"] .close-btn { opacity: .72; }
+
+  .stage[data-variant="clear"] .topbar { height: 64px; padding-left: 8px; }
+  .stage[data-variant="clear"] .article { padding: 30px 24px 130px; }
+  .stage[data-variant="clear"] .article h1 { font-size: 26px; font-weight: 750; letter-spacing: -.035em; }
+  .stage[data-variant="clear"] .fm { background: #f7f8fa; padding: 12px 14px; border-radius: 8px; }
+  .stage[data-variant="clear"] .article h2 { font-size: 20px; font-weight: 700; }
+  .stage[data-variant="clear"] .edit-btn { background: var(--accent-soft); border-radius: 8px; margin: 0 2px; }
+
+  .stage[data-variant="system"] .reading { padding: 10px; }
+  .stage[data-variant="system"] .topbar { top: 10px; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(20,25,30,.04); }
+  .stage[data-variant="system"] .article { margin-top: 10px; padding: 22px 18px 120px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+  .stage[data-variant="system"] .article h1 { font-size: 24px; font-weight: 700; }
+  .stage[data-variant="system"] .fm { padding: 11px 12px; background: #f5f6f8; border: 1px solid var(--line); border-radius: 10px; }
+  .stage[data-variant="system"] .article h2 { margin-top: 24px; padding: 10px 11px; background: #f5f6f8; border-radius: 8px; font-size: 17px; }
+  .stage[data-variant="system"] .edit-btn { background: var(--accent); color: white; border-radius: 8px; margin-right: 2px; }
+  .stage[data-variant="system"] .icon-btn, .stage[data-variant="system"] .close-btn { background: #f0f2f5; border-radius: 9px; }
+
+  /* 侧栏样张 */
+  .tree-view { position: absolute; inset: 0; z-index: 10; }
+  .underlay { position: absolute; inset: 0; opacity: .55; pointer-events: none; }
+  .scrim { position: absolute; inset: 0; background: var(--mask); }
+  .drawer {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 75%;
+    background: var(--sidebar);
+    color: var(--text);
+    box-shadow: 8px 0 28px rgba(0,0,0,.13);
+    display: flex;
+    flex-direction: column;
+    font-family: var(--font-ui);
+  }
+  .drawer-head { flex: 0 0 auto; padding: 10px 10px 8px; background: var(--sidebar); border-bottom: 1px solid var(--line); }
+  .drawer-title-row { display: flex; align-items: center; height: 44px; }
+  .drawer-title { flex: 1; font-size: 18px; font-weight: 700; padding-left: 8px; }
+  .close-btn { border-radius: var(--radius); }
+  .search-row { display: flex; gap: 5px; align-items: center; margin-top: 7px; }
+  .search-box {
+    flex: 1;
+    min-width: 0;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--muted);
+  }
+  .search-box svg { flex: 0 0 auto; width: 18px; height: 18px; }
+  .search-box input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; }
+  .search-box input::placeholder { color: var(--faint); }
+  .new-btn, .settings-btn { flex: 0 0 44px; height: 44px; border-radius: var(--radius); }
+  .new-btn { color: var(--accent); }
+  .new-btn svg { width: 21px; height: 21px; }
+  .tree { flex: 1; overflow: auto; padding: 8px 0 130px; }
+  .tree-row {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-right: 8px;
+    color: var(--text);
+    font-size: 14px;
+    white-space: nowrap;
+    position: relative;
+  }
+  .tree-row .chevron { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted); }
+  .tree-row .file-icon { width: 18px; height: 18px; flex: 0 0 auto; color: var(--muted); }
+  .tree-row .name { overflow-x: auto; scrollbar-width: none; }
+  .tree-row .name::-webkit-scrollbar { display: none; }
+  .tree-row .count { margin-left: auto; padding-left: 5px; color: var(--muted); font-size: 11px; }
+  .tree-row.folder { font-weight: 600; }
+  .tree-row.selected-folder { background: var(--selected); }
+  .tree-row.current-note { background: var(--current); color: var(--accent); font-weight: 650; }
+  .tree-row.selected-folder.current-note { box-shadow: inset 3px 0 0 var(--accent); }
+  .tree-caption { padding: 12px 14px 5px; color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+  .depth-1 { padding-left: 12px; }
+  .depth-2 { padding-left: 26px; }
+  .depth-3 { padding-left: 40px; }
+  .depth-4 { padding-left: 54px; }
+
+  .stage[data-variant="paper"] .drawer { box-shadow: 5px 0 20px rgba(65,50,30,.12); }
+  .stage[data-variant="paper"] .drawer-head { border-bottom: 0; padding-top: 15px; }
+  .stage[data-variant="paper"] .drawer-title { font-family: var(--font-reading); font-weight: 600; }
+  .stage[data-variant="paper"] .search-box { border-width: 0 0 1px; background: transparent; border-radius: 0; }
+  .stage[data-variant="paper"] .tree-row.selected-folder { box-shadow: inset 2px 0 0 var(--accent); }
+  .stage[data-variant="paper"] .tree-row.current-note { box-shadow: none; }
+  .stage[data-variant="paper"] .tree-row .file-icon { stroke-width: 1.25; }
+  .stage[data-variant="paper"] .tree-caption { font-family: var(--font-reading); }
+
+  .stage[data-variant="clear"] .drawer-head { padding: 12px 10px 10px; }
+  .stage[data-variant="clear"] .search-box { border-radius: 9px; }
+  .stage[data-variant="clear"] .new-btn, .stage[data-variant="clear"] .settings-btn { background: var(--surface); border: 1px solid var(--line); }
+  .stage[data-variant="clear"] .tree-row { margin: 0 7px; padding-right: 8px; border-radius: 7px; }
+  .stage[data-variant="clear"] .tree-row.selected-folder { box-shadow: none; }
+  .stage[data-variant="clear"] .tree-row.current-note { box-shadow: inset 3px 0 0 var(--accent); }
+  .stage[data-variant="clear"] .tree-caption { font-weight: 650; color: var(--faint); }
+
+  .stage[data-variant="system"] .drawer-head { padding: 10px; border-bottom: 0; }
+  .stage[data-variant="system"] .drawer-title-row { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 0 5px; }
+  .stage[data-variant="system"] .drawer-title { font-size: 16px; }
+  .stage[data-variant="system"] .search-row { margin-top: 8px; }
+  .stage[data-variant="system"] .search-box { border-radius: 10px; }
+  .stage[data-variant="system"] .new-btn, .stage[data-variant="system"] .settings-btn { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+  .stage[data-variant="system"] .new-btn { background: var(--accent); color: white; border-color: var(--accent); }
+  .stage[data-variant="system"] .tree { margin: 8px 7px 0; padding: 7px 3px 130px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  .stage[data-variant="system"] .tree-row { margin: 1px 3px; border-radius: 7px; }
+  .stage[data-variant="system"] .tree-row.selected-folder { box-shadow: none; }
+  .stage[data-variant="system"] .tree-row.current-note { box-shadow: inset 3px 0 0 var(--accent); }
+  .stage[data-variant="system"] .tree-row .file-icon { color: var(--accent); }
+  .stage[data-variant="system"] .tree-caption { color: var(--muted); font-weight: 600; }
+
+  /* 原型控制器，不属于任何候选设计。 */
+  .prototype-controls {
+    position: fixed;
+    z-index: 100;
+    left: 50%;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: min(366px, calc(100vw - 20px));
+    padding: 8px;
+    border-radius: 16px;
+    background: #16181c;
+    color: white;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  .variant-row { display: flex; align-items: center; gap: 6px; }
+  .switch-arrow { width: 44px; height: 44px; flex: 0 0 44px; border: 0; border-radius: 10px; background: #2b2f36; color: white; font-size: 24px; }
+  .variant-label { flex: 1; text-align: center; min-width: 0; }
+  .variant-label strong { display: block; font-size: 14px; }
+  .variant-label span { display: block; margin-top: 2px; color: #aeb5bf; font-size: 11px; }
+  .view-row { display: flex; gap: 5px; margin-top: 6px; }
+  .view-btn { flex: 1; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #b9c0ca; font-size: 13px; }
+  .view-btn.active { background: #353b44; color: white; font-weight: 600; }
+
+  @media (max-width: 430px) {
+    body { background: var(--page, #fff); }
+    .stage { width: 100vw; height: 100dvh; margin: 0; box-shadow: none; }
+  }
+  @media (min-width: 431px) {
+    .stage { border-radius: 24px; }
+    .stage .drawer { border-radius: 24px 0 0 24px; }
+  }
+</style>
+</head>
+<body>
+<main class="stage" id="prototype" data-variant="paper" aria-label="视觉方向样张">
+  <section class="reading" id="reading" aria-label="侧栏收起时的正文">
+    <header class="topbar">
+      <button class="icon-btn" aria-label="打开目录">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="doc-heading">
+        <div class="doc-kicker">03_Projects / NOMAD</div>
+        <div class="doc-title">NOMAD 种地小玩法开发笔记</div>
+      </div>
+      <button class="edit-btn">编辑</button>
+      <button class="icon-btn" aria-label="更多操作">
+        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </button>
+    </header>
+    <article class="article">
+      <h1>NOMAD 种地小玩法开发笔记</h1>
+      <div class="fm" aria-label="笔记声明区">
+        <div class="fm-row"><span class="fm-key">tags</span><span><span class="tag">NOMAD</span></span></div>
+      </div>
+      <p>本笔记记录了基于 <a class="wikilink" href="#">NOMAD 种地小玩法构思</a> 的开发进度与学习心得。</p>
+      <div class="omission" aria-hidden="true"></div>
+      <h2>待解决与未来优化</h2>
+      <ul class="tasks">
+        <li class="task done"><input class="check" type="checkbox" checked aria-label="已完成"><span class="task-text">Player 动画节奏调整 <span class="date">✅ 2026-02-01</span></span></li>
+        <li class="task"><input class="check" type="checkbox" aria-label="未完成"><span class="task-text"><span class="tag">游戏开发</span><span class="tag">NOMAD</span> <code>PlantManager</code> 单例化：目前 <code>plant_dictionary</code> 维护在 Player 中，存在清理不及时的问题</span></li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="tree-view" id="tree-view" hidden aria-label="侧栏展开时的目录树">
+    <div class="underlay" aria-hidden="true">
+      <header class="topbar">
+        <span class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></span>
+        <div class="doc-heading"><div class="doc-kicker">03_Projects / NOMAD</div><div class="doc-title">NOMAD 种地小玩法开发笔记</div></div>
+      </header>
+      <article class="article"><h1>NOMAD 种地小玩法开发笔记</h1><p>本笔记记录了基于 NOMAD 种地小玩法构思的开发进度与学习心得。</p></article>
+    </div>
+    <div class="scrim"></div>
+    <aside class="drawer">
+      <div class="drawer-head">
+        <div class="drawer-title-row">
+          <div class="drawer-title">笔记</div>
+          <button class="close-btn" aria-label="关闭目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+        <div class="search-row">
+          <label class="search-box">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg>
+            <input type="search" placeholder="搜索标题与路径" aria-label="搜索标题与路径">
+          </label>
+          <button class="new-btn" aria-label="新建"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button class="settings-btn" aria-label="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.09v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></button>
+        </div>
+      </div>
+      <div class="tree">
+        <div class="tree-caption">全部笔记</div>
+        <div class="tree-row folder depth-1"><svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 2 4 4-4 4"/></svg><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h7l2 2h9v10H3z"/></svg><span class="name">00_Inbox</span></div>
+        <div class="tree-row folder depth-1"><svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2 4 4 4 4-4"/></svg><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h7l2 2h9v10H3z"/></svg><span class="name">03_Projects</span></div>
+        <div class="tree-row folder depth-2"><svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 2 4 4-4 4"/></svg><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h7l2 2h9v10H3z"/></svg><span class="name">Godot学习</span></div>
+        <div class="tree-row folder selected-folder depth-2"><svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2 4 4 4 4-4"/></svg><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h7l2 2h9v10H3z"/></svg><span class="name">NOMAD</span></div>
+        <div class="tree-row depth-3"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">NOMAD Pre-demo内容清单</span></div>
+        <div class="tree-row current-note depth-3"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">NOMAD 种地小玩法开发笔记</span></div>
+        <div class="tree-row depth-3"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">NOMAD 种地小玩法构思</span></div>
+        <div class="tree-row depth-3"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">NOMAD 开发时间表</span></div>
+        <div class="tree-row folder depth-1"><svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2 4 4 4 4-4"/></svg><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h7l2 2h9v10H3z"/></svg><span class="name">日记归档</span><span class="count">197 篇</span></div>
+        <div class="tree-row depth-2"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">2026-01-18</span></div>
+        <div class="tree-row depth-2"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">2026-01-19</span></div>
+        <div class="tree-row depth-2"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">2026-01-20</span></div>
+        <div class="tree-row depth-2"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">2026-01-21</span></div>
+        <div class="tree-row depth-2"><svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></svg><span class="name">2026-01-22</span></div>
+      </div>
+    </aside>
+  </section>
+</main>
+
+<nav class="prototype-controls" aria-label="原型切换">
+  <div class="variant-row">
+    <button class="switch-arrow" id="previous" aria-label="上一个方向">‹</button>
+    <div class="variant-label"><strong id="variant-name">A · 纸页感</strong><span id="variant-description">衬线正文 · 留白与细线 · 轻图标</span></div>
+    <button class="switch-arrow" id="next" aria-label="下一个方向">›</button>
+  </div>
+  <div class="view-row">
+    <button class="view-btn active" id="reading-btn">正文样张</button>
+    <button class="view-btn" id="tree-btn">侧栏样张</button>
+  </div>
+</nav>
+
+<script>
+  const variants = [
+    { key: "paper", name: "A · 纸页感", description: "衬线正文 · 留白与细线 · 轻图标" },
+    { key: "clear", name: "B · 清爽白底", description: "粗黑标题 · 字重分层 · 蓝色点缀" },
+    { key: "system", name: "C · 系统工具感", description: "灰色工作台 · 白色面板 · 明确控件" }
+  ];
+  const params = new URLSearchParams(location.search);
+  let variantIndex = Math.max(0, variants.findIndex(item => item.key === params.get("variant")));
+  let view = params.get("view") === "tree" ? "tree" : "reading";
+  const stage = document.getElementById("prototype");
+  const reading = document.getElementById("reading");
+  const treeView = document.getElementById("tree-view");
+  const readingButton = document.getElementById("reading-btn");
+  const treeButton = document.getElementById("tree-btn");
+
+  function render() {
+    const variant = variants[variantIndex];
+    stage.dataset.variant = variant.key;
+    document.getElementById("variant-name").textContent = variant.name;
+    document.getElementById("variant-description").textContent = variant.description;
+    reading.hidden = view !== "reading";
+    treeView.hidden = view !== "tree";
+    readingButton.classList.toggle("active", view === "reading");
+    treeButton.classList.toggle("active", view === "tree");
+    const nextParams = new URLSearchParams(location.search);
+    nextParams.set("variant", variant.key);
+    nextParams.set("view", view);
+    history.replaceState(null, "", `${location.pathname}?${nextParams}`);
+  }
+
+  function cycle(step) {
+    variantIndex = (variantIndex + step + variants.length) % variants.length;
+    render();
+  }
+  document.getElementById("previous").addEventListener("click", () => cycle(-1));
+  document.getElementById("next").addEventListener("click", () => cycle(1));
+  readingButton.addEventListener("click", () => { view = "reading"; render(); });
+  treeButton.addEventListener("click", () => { view = "tree"; render(); });
+  document.addEventListener("keydown", event => {
+    if (event.target.matches("input, textarea, [contenteditable]")) return;
+    if (event.key === "ArrowLeft") cycle(-1);
+    if (event.key === "ArrowRight") cycle(1);
+  });
+  render();
+</script>
+</body>
+</html>
