@@ -313,3 +313,21 @@ test('allowToast：sticky 的「送不到」期间挡住普通提示，放行另
   assert.equal(allowToast(null, null), true);
   assert.equal(allowToast({ label: '撤销' }, null), true, '普通提示期间照常放行');
 });
+
+// 判据 5 后半：main.js 的 backToRead() 在退出编辑这一刻会触发一次 replay。这里把
+// getScreen 从 edit 切到 read，断言这一次 replay 不再跳过、当场把那篇补发出去。
+test('replay：退出编辑（edit → read）后单次 replay 不再跳过，照常补发那篇', async () => {
+  const h = harness();
+  h.writeFails('甲.md', new Error('断网'));
+  await h.checks.record(rec(0, true, c1)); // 编辑期间甲篇留着一笔没送到
+  h.writeOk('甲.md');
+  h.screen({ view: 'editor', path: '甲.md', mode: 'edit' });
+  // 退出编辑：屏幕切回 read，backToRead() 触发的这次补发
+  h.screen({ view: 'editor', path: '甲.md', mode: 'read' });
+  const before = h.calls.writeFile.length;
+  await h.checks.replay();
+  assert.equal(h.calls.writeFile.length, before + 1, '退出编辑这一刻就补发，不必等切前台 / 冷启动');
+  assert.equal(h.lastWrite().p, '甲.md');
+  assert.deepEqual(h.store(), {}, '送成后划掉');
+  assert.deepEqual(h.calls.setScreenSha, ['after-s1'], '屏幕正开那篇阅读态，版本号跟着换');
+});

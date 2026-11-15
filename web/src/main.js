@@ -589,12 +589,19 @@ function gotoDir(dir) {
   else location.hash = target; // hashchange → navigate → loadDir
 }
 
+// #60：从编辑 / 冲突态「回到阅读态」的统一落点。退出编辑这一刻就补发那篇没送到的
+// 勾选（判据 5 后半），不必再等下一次切回前台 / 冷启动。replay 只在这一处调用。
+function backToRead() {
+  state.mode = 'read';
+  pendingChecks.replay();
+}
+
 async function save() {
   state.busy = true; render();
   try {
     const r = await writeFile(state.file.path, state.draft, state.file.sha, commitMessage.edit(state.file.path));
     state.file.sha = r.sha; state.file.content = state.draft;
-    state.mode = 'read';
+    backToRead();
     toast('已保存');
   } catch (e) {
     if (e.conflict && e.remote) enterConflict(e.remote);
@@ -668,7 +675,7 @@ async function commitMerge() {
   try {
     const r = await writeFile(state.file.path, merged, state.conflict.remote.sha, commitMessage.merge(state.file.path));
     state.file.sha = r.sha; state.file.content = merged;
-    state.mode = 'read'; state.conflict = null;
+    backToRead(); state.conflict = null;
     toast('合并已保存');
   } catch (e) {
     toast(e.message);
@@ -1265,7 +1272,7 @@ function renderEditor() {
   const eb = document.getElementById('edit-btn');
   if (eb) eb.addEventListener('click', startEdit);
   const cb = document.getElementById('cancel-btn');
-  if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; state.mode = 'read'; render(); });
+  if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; backToRead(); render(); });
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
   wireDialog();
