@@ -21,7 +21,7 @@
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 前端 | Vite + 原生 JS（无框架） | 页面简单（列表 + 编辑器），框架是多余重量；Vite 负责构建与未来打包 PWA |
+| 前端 | Vite + 原生 JS（无框架） | 交互简单（一屏两栏：侧栏 + 正文区），框架是多余重量；Vite 负责构建与未来打包 PWA |
 | Markdown 渲染 | markdown-it（+ tables 插件） | 轻量、GFM、易扩展 wikilink 插件 |
 | 字符级 diff | 自实现字符级 LCS（`web/src/main.js`） | 只需「高亮 + 逐个采纳」这一档粒度，引入 diff-match-patch 是多一个依赖；实测够用 |
 | 后端 | 平台无关核心 + 薄适配器 | `server/src/core.js` 是唯一实现（藏 token、解 CORS、UTF-8 编解码）；`server/src/index.js` 是唯一的入口（Cloudflare Workers），只做分工：`/api/*` 进 core，其余交给静态资源绑定 |
