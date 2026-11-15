@@ -2,12 +2,45 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#f7f6f2">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- theme-color 跟随系统外观；用户本机另存 light/dark 时，页面底色由下面的
+       data-theme + style.css 定，浏览器 chrome 颜色只是次要装饰，不影响第一帧。 -->
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#F6F2E9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1D1C19" media="(prefers-color-scheme: dark)">
   <title>笔记</title>
+  <!--
+    主题第一帧定色（visual-spec §3.2）：**只读不写本机记录**，放在主样式表之前。
+    与 web/src/theme.js 互为镜像 —— 存储键 'gitobsidianlite.theme'、取值
+    light / dark / system、缺省 system、system 用
+    matchMedia('(prefers-color-scheme: dark)') 解析；任一处改存储格式或解析规则，
+    另一处必须同改。最终只把解析后的 light / dark 写到 data-theme 与 color-scheme，
+    让 html/body 的第一帧就使用 --color-page，暗色用户不会先被一屏白刺一下。
+    解锁框出现之前颜色已按存档生效；框里不给切换主题的入口。
+  -->
+  <script>
+    (() => {
+      let preference = 'system';
+      try {
+        preference = localStorage.getItem('gitobsidianlite.theme') || 'system';
+      } catch (_) {}
+      if (preference !== 'light' && preference !== 'dark' && preference !== 'system') {
+        preference = 'system';
+      }
+      const dark = preference === 'dark' ||
+        (preference === 'system' &&
+          typeof matchMedia === 'function' &&
+          matchMedia('(prefers-color-scheme: dark)').matches);
+      const root = document.documentElement;
+      root.dataset.theme = dark ? 'dark' : 'light';
+      root.style.colorScheme = dark ? 'dark' : 'light';
+    })();
+  </script>
 </head>
 <body>
-  <div id="app"></div>
+  <!-- 一屏两栏骨架由 layout.js 的 mountShell() 幂等注入一次（含 #app）。
+       #app 是正文内容区，现有 render 仍往它写；侧栏/顶栏/遮罩在它之外常驻。 -->
+  <div id="shell"></div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

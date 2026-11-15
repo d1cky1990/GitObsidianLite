@@ -25,6 +25,19 @@ import { installFrontmatterRule } from './frontmatter.js';
 import { searchTitles, normalizeQuery } from './search.js';
 import './style.css';
 
+// ---- #61 一屏两栏骨架 ----------------------------------------------------
+// main.js 只做 import 与一处接线（handoff「降低合并冲突的模块边界」）。新逻辑
+// 都在独立模块里，每票各改自己的文件，不在这个文件里堆实现。
+// 三个契约模块（导出名固定，后续票按同一接口填充，不另造一套）：
+//   theme.js        → getThemePreference / setThemePreference / applyTheme（由 layout.js 接）
+//   tree.js         → buildTree / sortEntries / refreshTree / getSelectedFolder /
+//                     setSelectedFolder / selectPath（占位，#62 填充）
+//   editor-guard.js → isLocked / guardExitEdit（占位，#65 填充）
+// 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
+// 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
+import { initLayout } from './layout.js';
+import { getSelectedFolder } from './tree.js';
+
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 // 待办勾选框（#13/#27）：渲染钩子把列表项开头的 `[ ]`/`[x]` 换成方框，
@@ -59,6 +72,11 @@ installTagRule(md);
 // 声明区（#30）：块级规则，认的是文件最开头那两条 `---`。挂在这里只是跟其他几条
 // 摆在一起；它必须在 `hr` 之前跑（否则 `---` 已经变成分隔线了），这一点由它自己保证。
 installFrontmatterRule(md);
+
+// 骨架只建一次（mountShell 幂等）：注入 #shell 里的两栏 DOM（含 #app），应用
+// 主题第一帧之后那次读取，接好侧栏开合 / 占位历史 / 返回四层。必须在取 #app
+// 之前跑——index.html 现在只留 #shell 容器，#app 由骨架生成。
+initLayout();
 
 const app = document.getElementById('app');
 
@@ -481,6 +499,12 @@ function computeMerged(conflict) {
 const state = {
   view: 'list', // 'list' | 'editor'
   path: '', // 当前目录（list）或文件路径（editor）
+  // #61 三个词各有唯一真相（GLOSSARY.md）。旧 path 同时当「目录」与「文件」用，
+  // 才会拼出 `某篇.md/新笔记.md`；新建落点只读 selectedDir，绝不读 openedPath。
+  selectedDir: getSelectedFolder(), // 选中的文件夹（新建落点；tree.js #62 填充）
+  openedPath: '', // 打开的那篇（address bar 只跟它走）
+  editingPath: '', // 正在编辑的那篇（编辑 / 冲突态）
+  sidebarOpen: false, // 侧栏开合（窄屏滑出 / 宽屏收起）
   entries: [],
   file: null, // { path, sha, content }
   mode: 'read', // 'read' | 'edit' | 'conflict'
