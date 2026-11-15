@@ -10,6 +10,8 @@ import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
 } from './file-names.js';
 import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js';
+// 勾选「先记本机、送到再划掉」（#60）：按篇聚合的待发记录、补发、粘性提示门。
+import { createPendingChecks, allowToast } from './pending-checks.js';
 // Tasks 记号（#28）：列表项里的 ⏳📅✅… 翻成胶囊标签；```tasks 查询块给一句说明加
 // 可展开原文，不执行。两者的规则各自住在自己的文件里。
 import { installTaskMarkerRule } from './task-markers.js';
@@ -540,6 +542,7 @@ function esc(s) {
 // 就没了的提示，配上要去找的按钮，等于没给。
 let toastTimer = null;
 function toast(msg, action = null) {
+  if (!allowToast(state.toastAction, action)) return; // #60：送不到的提示不许被普通提示顶掉
   state.message = msg;
   state.toastAction = action;
   render();
@@ -610,12 +613,19 @@ function gotoDir(dir) {
   else location.hash = target; // hashchange → navigate → loadDir
 }
 
+// #60：从编辑 / 冲突态「回到阅读态」的统一落点。退出编辑这一刻就补发那篇没送到的
+// 勾选（判据 5 后半），不必再等下一次切回前台 / 冷启动。replay 只在这一处调用。
+function backToRead() {
+  state.mode = 'read';
+  pendingChecks.replay();
+}
+
 async function save() {
   state.busy = true; render();
   try {
     const r = await writeFile(state.file.path, state.draft, state.file.sha, commitMessage.edit(state.file.path));
     state.file.sha = r.sha; state.file.content = state.draft;
-    state.mode = 'read';
+    backToRead();
     toast('已保存');
   } catch (e) {
     if (e.conflict && e.remote) enterConflict(e.remote);
@@ -689,7 +699,7 @@ async function commitMerge() {
   try {
     const r = await writeFile(state.file.path, merged, state.conflict.remote.sha, commitMessage.merge(state.file.path));
     state.file.sha = r.sha; state.file.content = merged;
-    state.mode = 'read'; state.conflict = null;
+    backToRead(); state.conflict = null;
     toast('合并已保存');
   } catch (e) {
     toast(e.message);
@@ -1202,21 +1212,23 @@ function onScroll() {
 window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('resize', onScroll);
 
-/* ---------- 待办勾选框（#13/#27/#28） ---------- */
+/* ---------- 待办勾选框（#13/#27/#28/#60） ---------- */
 //
-// 点一个存一个（#13 定稿）：点下立即在页面上勾上（乐观），排队逐个提交，每次都带
-// sha 核对。失败 → 这一勾退回原样、提示，**排在其后的全部停住**——正文基准已经
-// 不确定，继续提交等于把没见过的内容往仓库里写。
-// 远端被改过（sha 核对不过）不自动进冲突合并界面：从勾选框掉进合并界面会把人打蒙。
-//
-// 每条排队项都揣着**点下去之前的那份正文**（`prev`）。失败时按它整份还原，而不是
-// 「再切一次」——#28 起切换会顺带增删 `✅` 日期，再切一次回不到原样（原来那个日期
-// 已经被今天顶掉了）。整份还原还有个好处：排在后面的那几个乐观勾会跟着一起消失，
-// 界面上不留「看着勾上了、其实没存上」的假勾。
-const taskQueue = [];
-let taskSaving = false;
+// 点一个存一个（#13 定稿）：点下立即在页面上勾上（乐观）。#60 起「先记本机、送到再划掉」：
+// 每一笔记住自己是哪篇、第几行、勾成什么、点下那一刻那篇的版本号；提交时不再读屏幕，
+// 换过篇也不会把甲篇的改动 / 版本号安到乙篇头上。按篇聚合、补发、合并、送不到判定
+// 全住在 pending-checks.js，这里只做一处接线。
+const pendingChecks = createPendingChecks({
+  storage: window.localStorage,
+  readFile,
+  writeFile,
+  toast,
+  openNote: (path) => { location.hash = '#/edit/' + encodeURIComponent(path); },
+  getScreen: () => ({ view: state.view, path: state.path, mode: state.mode }),
+  setScreenSha: (sha) => { if (state.file) state.file.sha = sha; },
+});
 
-/** 点了某个方框：先乐观切换这一行，再排队保存。 */
+/** 点了某个方框：先乐观切换这一行，再记一笔待发并立刻发送。 */
 function onTaskClick(line) {
   if (state.view !== 'editor' || state.mode !== 'read') return;
   const prev = state.file.content;
@@ -1228,44 +1240,13 @@ function onTaskClick(line) {
   state.file.content = next;
   render();
   window.scrollTo(0, y);
-  taskQueue.push({ prev, done });
-  pumpTaskQueue();
-}
-
-async function pumpTaskQueue() {
-  if (taskSaving) return;
-  taskSaving = true;
-  try {
-    while (taskQueue.length) {
-      // 离开阅读态（进编辑 / 冲突 / 返回目录）就别再写了：界面上没人等着它，
-      // 而且编辑态以 state.draft 为准，后台改 content 会把两边搅乱
-      if (state.view !== 'editor' || state.mode !== 'read') { taskQueue.length = 0; return; }
-      const job = taskQueue[0];
-      try {
-        const r = await writeFile(
-          state.file.path,
-          state.file.content,
-          state.file.sha,
-          commitMessage.check(state.file.path, job.done),
-        );
-        state.file.sha = r.sha;
-        taskQueue.shift(); // 存成了才出队——失败时它还得留着还原用
-        toast('已保存');
-      } catch (e) {
-        state.file.content = job.prev;
-        taskQueue.length = 0;
-        toast(e.conflict
-          ? '这篇在别处被改过，没存上。重新打开这篇再勾'
-          : '没存上：' + e.message);
-        const y = window.scrollY;
-        render();
-        window.scrollTo(0, y);
-        return;
-      }
-    }
-  } finally {
-    taskSaving = false;
-  }
+  pendingChecks.record({
+    path: state.file.path,
+    sha: state.file.sha,
+    line,
+    done,
+    content: next, // 那一刻的正文只留内存供这一次发送，不落本机
+  });
 }
 
 function renderEditor() {
@@ -1315,7 +1296,7 @@ function renderEditor() {
   const eb = document.getElementById('edit-btn');
   if (eb) eb.addEventListener('click', startEdit);
   const cb = document.getElementById('cancel-btn');
-  if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; state.mode = 'read'; render(); });
+  if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; backToRead(); render(); });
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
   wireDialog();
@@ -1517,10 +1498,15 @@ async function recheckRepo() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') recheckRepo();
 });
+// #60：切回前台补发没送到的勾选（与上面那条版本身份检查各管各的）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') pendingChecks.replay();
+});
 
 window.addEventListener('hashchange', navigate);
 resetFab();
 navigate();
+pendingChecks.replay(); // #60：冷启动也补发一次没送到的勾选
 
 /* ---------- 一次性善后：本机那份正文副本随功能一起下架（#44 / ADR-0003） ---------- */
 //
