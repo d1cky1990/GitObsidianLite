@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>搜索收起 / 点滑手感 · 小原型（抛弃式 · #57）</title>
+<!--
+  PROTOTYPE ONLY — 只验一件事：搜索框展开/收起时，手指「点」和「滑」分别该怎么被理解。
+  规则来自 d1cky 2026-11-15 的确认：
+    · 点击命中可点物 → 触发它；点击空白 → 按框空/框有词分两路
+    · 滑动（不管滑在哪）→ 取消输入状态 + 照常响应滑动，搜索框保留显示
+  单文件、零外部依赖、离线可开。骨架只建一次，#search-input 全程不替换。
+-->
+<style>
+[hidden] { display:none !important; }
+:root {
+  color-scheme:light;
+  --page:#F6F2E9; --surface:#FBF8F1; --side:#EFE9DC; --raised:#FFFCF6;
+  --text:#302D27; --secondary:#6E665A; --faint:#756C5E; --border:#D5CCBB;
+  --accent:#7C4F27; --accent-soft:#E9DCC6; --selected:#E4D6BE; --hover:#EAE1D2;
+  --code:#EEE7DA; --warn:#805A16; --warn-bg:#F2E5C5; --ok:#2F6B4F; --ok-bg:#DFE9DC;
+  --focus:#315F7D; --matte:#E6E0D5; --shadow:0 8px 24px #30271829;
+  --font-ui:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --font-read:Georgia,"Songti SC","Noto Serif CJK SC",serif;
+}
+:root[data-theme="dark"] {
+  color-scheme:dark;
+  --page:#1D1C19; --surface:#25231F; --side:#211F1B; --raised:#2C2924;
+  --text:#EFE9DC; --secondary:#B6AC9A; --faint:#9A8F7C; --border:#443E34;
+  --accent:#D8AC79; --accent-soft:#3B3124; --selected:#40372A; --hover:#332F28;
+  --code:#332F28; --warn:#D8B268; --warn-bg:#3A3020; --ok:#8FC4A6; --ok-bg:#25382D;
+  --focus:#8FC0DC; --matte:#332F28; --shadow:0 8px 24px #0006;
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:16px; background:#E8E2D6; color:var(--text); font-family:var(--font-ui); }
+:root[data-theme="dark"] body { background:#141310; }
+.demo { max-width:1080px; margin:0 auto 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface); padding:12px 16px; }
+.demo h1 { margin:0 0 6px; font-size:16px; }
+.demo p { margin:0 0 8px; font-size:13px; line-height:1.65; color:var(--secondary); }
+.demo .rules { border-left:3px solid var(--accent); padding-left:10px; }
+.demo .new { color:var(--warn); font-weight:600; }
+.ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ctl button { min-height:36px; padding:0 12px; border:1px solid var(--border); border-radius:6px; background:var(--raised); color:var(--text); font-size:13px; cursor:pointer; }
+.ctl button:hover { background:var(--hover); }
+#tried-count { font-size:13px; font-weight:600; color:var(--accent); }
+.stage { max-width:1080px; margin:0 auto; display:grid; grid-template-columns:390px 1fr; gap:14px; align-items:start; }
+@media (max-width:820px) {
+  body { padding:8px; }
+  .demo { padding:8px 10px; margin-bottom:8px; }
+  .demo h1 { font-size:14px; margin-bottom:4px; }
+  .demo p { font-size:11px; line-height:1.5; margin-bottom:6px; }
+  .demo p.rules { font-size:10px; line-height:1.35; margin-bottom:4px; }
+  .ctl button { min-height:32px; font-size:12px; }
+  .stage { grid-template-columns:1fr; gap:8px; }
+  .stage .phone { width:100%; max-width:390px; height:calc(100dvh - 310px); min-height:440px; }
+}
+
+/* ---------- 手机画布 ---------- */
+.phone { position:relative; width:390px; height:844px; overflow:hidden; background:var(--page); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); }
+.main { position:absolute; inset:0; display:flex; flex-direction:column; }
+.topbar { flex:0 0 auto; min-height:56px; display:flex; align-items:center; gap:4px; padding:6px 8px; border-bottom:1px solid var(--border); background:var(--page); }
+.tap { border:0; background:transparent; color:var(--text); min-width:44px; min-height:44px; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; padding:0; cursor:pointer; }
+.tap:hover { background:var(--hover); }
+.tap svg { width:20px; height:20px; }
+.doc-head { flex:1 1 auto; min-width:0; padding:0 4px; }
+.kicker { font-size:11px; line-height:1.3; margin-bottom:2px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.doc-title { font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.text-btn { border:0; background:transparent; color:var(--accent); font-size:15px; font-weight:600; min-height:44px; padding:0 12px; cursor:pointer; }
+.article { flex:1 1 auto; overflow:auto; padding:18px 20px 90px; font-family:var(--font-read); font-size:16px; line-height:1.85; }
+.article h2 { font-size:21px; margin:0 0 12px; }
+.article p { margin:0 0 14px; }
+.article .decl { font-family:var(--font-ui); font-size:12px; color:var(--secondary); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:18px; }
+.hit { background:var(--accent-soft); border-radius:3px; padding:0 2px; }
+.article table { border-collapse:collapse; width:100%; font-family:var(--font-ui); font-size:13px; }
+.article th,.article td { border:1px solid var(--border); padding:7px 9px; text-align:left; }
+.article th { background:var(--code); }
+
+/* 侧栏 */
+.scrim { position:absolute; inset:0 0 0 75%; z-index:19; background:#2A241B33; }
+.phone[data-side="false"] .scrim { display:none; }
+.side-close-out { position:absolute; left:calc(75% + 8px); top:72px; z-index:22; width:44px; height:44px; border-radius:50%; border:1px solid var(--border); background:var(--raised); color:var(--text); font-size:17px; cursor:pointer; box-shadow:var(--shadow); }
+.phone[data-side="false"] .side-close-out { display:none; }
+.sidebar { position:absolute; left:0; top:0; bottom:0; width:75%; z-index:20; background:var(--side); display:flex; flex-direction:column; box-shadow:5px 0 20px #412A1E1F; transform:translateX(-100%); transition:transform 200ms cubic-bezier(.2,.8,.2,1); }
+.phone[data-side="true"] .sidebar { transform:translateX(0); }
+.side-head { position:relative; flex:0 0 auto; height:56px; border-bottom:1px solid var(--border); background:var(--side); }
+.head-title { position:absolute; left:12px; top:0; bottom:0; display:flex; align-items:center; font-size:15px; font-weight:600; }
+#btn-search-open { position:absolute; right:6px; top:6px; z-index:1; }
+.search-slot { position:absolute; inset:0; z-index:3; display:flex; align-items:center; gap:2px; background:var(--raised); border:0; border-bottom:1px solid var(--border); padding:0 4px 0 12px; }
+.search-slot input { flex:1 1 auto; min-width:0; height:42px; border:0; outline:0; background:transparent; color:var(--text); font-family:var(--font-ui); font-size:16px; }
+.search-slot input::placeholder { color:var(--faint); }
+#btn-clear { color:var(--secondary); font-size:16px; }
+.panel { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:6px 0; scrollbar-width:none; }
+.panel::-webkit-scrollbar { display:none; }
+.tree-row,.result-row { display:flex; align-items:center; gap:6px; min-height:44px; width:100%; border:0; background:transparent; color:var(--text); text-align:left; padding:0 10px; font-size:14px; cursor:pointer; touch-action:pan-y; }
+.tree-row:hover,.result-row:hover { background:var(--hover); }
+.tree-row .ico,.result-row .ico { width:16px; flex:0 0 auto; color:var(--secondary); font-size:13px; }
+.tree-row .nm { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.result-row { flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; min-height:52px; padding:6px 12px; border-bottom:1px solid var(--border); }
+.result-row .r-name { font-size:14px; font-weight:600; }
+.result-row .r-path { font-size:12px; color:var(--secondary); }
+.panel-empty { padding:22px 14px; font-size:13px; color:var(--secondary); line-height:1.7; }
+.blank-zone { height:82px; display:flex; align-items:center; justify-content:center; margin:0 8px 6px; border:1px dashed var(--border); border-radius:8px; color:var(--faint); font-size:12px; background:var(--surface); }
+.scroll-filler { height:760px; padding:18px 14px; color:var(--faint); font-size:12px; }
+.side-foot { flex:0 0 auto; display:flex; gap:0; border-top:1px solid var(--border); background:var(--side); padding-bottom:env(safe-area-inset-bottom,0px); }
+.side-foot button { flex:1 1 50%; min-height:48px; border:0; background:transparent; color:var(--text); font-size:14px; font-weight:600; cursor:pointer; }
+.side-foot button + button { border-left:1px solid var(--border); }
+.side-foot button:hover { background:var(--hover); }
+
+/* 模拟键盘（只为让「输入状态在不在」看得见） */
+.kbd { position:absolute; left:0; right:0; bottom:0; height:230px; z-index:40; background:var(--code); border-top:1px solid var(--border); padding:8px 6px; }
+.kbd-hint { font-size:11px; color:var(--secondary); text-align:center; margin-bottom:8px; }
+.kbd-keys { display:grid; grid-template-columns:repeat(10,1fr); gap:4px; }
+.kbd-keys span { display:flex; align-items:center; justify-content:center; height:38px; background:var(--raised); border:1px solid var(--border); border-radius:5px; font-size:13px; }
+
+/* ---------- 演示层 ---------- */
+.side-pane { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.log { border:1px solid var(--border); border-radius:10px; background:var(--surface); padding:12px 14px; }
+.log h2,.checklist h2 { margin:0 0 8px; font-size:14px; }
+#log-lines { font-size:12px; line-height:1.7; font-family:ui-monospace,Consolas,monospace; color:var(--secondary); min-height:96px; }
+#log-lines div { border-bottom:1px dashed var(--border); padding:2px 0; }
+#log-lines b { color:var(--accent); font-weight:600; }
+.checklist { border:1px solid var(--border); border-radius:10px; background:var(--surface); padding:12px 14px; }
+.cl-row { display:flex; align-items:flex-start; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:13px; line-height:1.55; }
+.cl-row:last-child { border-bottom:0; }
+.dot { flex:0 0 auto; width:18px; height:18px; border-radius:50%; border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:11px; color:transparent; margin-top:1px; }
+.cl-row.done .dot { background:var(--ok); border-color:var(--ok); color:#fff; }
+.cl-row .txt { flex:1 1 auto; min-width:0; }
+.cl-row .txt em { font-style:normal; color:var(--warn); }
+.cl-row button { flex:0 0 auto; min-height:32px; padding:0 10px; border:1px solid var(--border); border-radius:5px; background:var(--raised); color:var(--accent); font-size:12px; cursor:pointer; }
+.state-line { font-size:12px; color:var(--secondary); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border); font-family:ui-monospace,Consolas,monospace; }
+/* 尺寸标注层仅作演示 */
+.tape [data-tap] { outline:1px dashed rgba(200,60,60,.75); outline-offset:-1px; }
+</style>
+</head>
+<body>
+<div class="demo">
+  <h1>搜索收起 / 点滑手感 · 小原型（#57 · 抛弃式）</h1>
+  <p class="rules">
+    <b>第一条</b>　点叉 = 清空词，光标和键盘都还在。<br>
+    <b>第二条</b>　只要动在搜索框之外（点或滑都算）：<b class="new">框空 → 收成放大镜；框有词 → 只取消输入状态，框仍显示、词仍在</b>。<br>
+    <b>第三条</b>　叠在第二条上面：如果是<b>点击</b>且点到了能点的东西，就照常触发它；如果是<b>滑动</b>，不管滑在哪里，都取消输入状态 + 照常滚动列表。<br>
+    模拟键盘上的点／滑都不算「框外」（按「输入法键盘除外」）；点叉、点搜索框里也不算。<br>
+    <b class="new">上一版做错、这一版改回来了</b>：框空时<b>滑动也会收成放大镜</b>；点可点物时，除了触发它，搜索框该收还是收、该留还是留。请重点试第 7、13、14 条。<br>
+    <b>真机请特别看两处</b>：① 正在打拼音时去滑列表，框里会不会留半截拼音；② 键盘弹起时，底部「新建／设置」横条被盖住了，这一版没有答案，归后面的界面验收定。
+  </p>
+  <div class="ctl">
+    <button data-act="toggleTheme">明暗切换</button>
+    <button data-act="toggleTape">尺寸标注</button>
+    <button data-act="reset">全部重来</button>
+    <span id="tried-count">试过 0 / 14</span>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="phone" id="screen" data-side="true">
+    <div class="main">
+      <div class="topbar">
+        <button class="tap" data-act="openSide" id="btn-menu" data-tap aria-label="打开侧栏"></button>
+        <div class="doc-head">
+          <div class="kicker" id="kicker">还没打开笔记</div>
+          <div class="doc-title" id="doc-title">从侧栏里找一篇</div>
+        </div>
+        <button class="text-btn" data-act="edit" id="btn-edit" data-tap>编辑</button>
+      </div>
+      <div class="article" id="article">
+        <h2>还没打开笔记</h2>
+        <div class="decl">从左边侧栏里找一篇，或者在搜索框里输几个字。这个原型只验「点」和「滑」分别被怎么理解。</div>
+        <p>右边这块是正文。手机上侧栏拉开时会盖住四分之三，露出这一条边；点露出来的地方可以关掉侧栏。</p>
+      </div>
+    </div>
+
+    <div class="scrim" data-act="closeSide" data-tap id="scrim"></div>
+    <button class="side-close-out" data-act="closeSide" data-tap id="btn-side-close" aria-label="关闭侧栏">✕</button>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head" id="side-head">
+        <div class="head-title" id="head-title">笔记库</div>
+        <button class="tap" data-act="searchOpen" data-tap id="btn-search-open" aria-label="展开搜索"></button>
+        <div class="search-slot" id="search-slot" hidden>
+          <input id="search-input" type="text" placeholder="搜索标题与路径" autocomplete="off" aria-label="搜索标题与路径">
+          <button class="tap" data-act="clearSearch" data-tap id="btn-clear" aria-label="清空搜索">✕</button>
+        </div>
+      </div>
+      <div class="panel" id="panel"></div>
+      <div class="side-foot">
+        <button data-act="newNote" data-tap>＋ 新建</button>
+        <button data-act="settings" data-tap>⚙ 设置</button>
+      </div>
+    </aside>
+
+    <div class="kbd" id="kbd" hidden>
+      <div class="kbd-hint">模拟键盘 · 点这里不算「框外」，不会把搜索收起来</div>
+      <div class="kbd-keys" id="kbd-keys"></div>
+    </div>
+  </div>
+
+  <div class="side-pane">
+    <div class="log">
+      <h2>刚刚发生了什么</h2>
+      <div id="log-lines"></div>
+      <div class="state-line" id="state-line"></div>
+    </div>
+    <div class="checklist">
+      <h2>请一条条用手指试（点「准备」把画面摆到起点）</h2>
+      <div id="cl-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ---------- 静态内容（真实感，不用占位块） ---------- */
+const ICON = {
+  menu:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>',
+  folder:'▸', note:'·'
+};
+const TREE = [
+  {t:'d', name:'00_Inbox'},
+  {t:'d', name:'03_Projects'},
+  {t:'n', name:'笔记系统方案', path:'03_Projects/笔记系统/笔记系统方案.md'},
+  {t:'n', name:'移动端同步方案', path:'03_Projects/笔记系统/移动端同步方案.md'},
+  {t:'n', name:'知识图谱怎么维护', path:'03_Projects/笔记系统/知识图谱怎么维护.md'},
+  {t:'d', name:'零碎'},
+  {t:'n', name:'NOMAD 玩法结构', path:'03_Projects/NOMAD/NOMAD 玩法结构.md'},
+  {t:'n', name:'合作开发工作模式', path:'03_Projects/NOMAD/合作开发工作模式.md'},
+  {t:'d', name:'日记归档'},
+  {t:'n', name:'2026-02-05', path:'日记归档/2026-02-05.md'},
+  {t:'n', name:'2026-05-14', path:'日记归档/2026-05-14.md'},
+  {t:'n', name:'2026-09-19', path:'日记归档/2026-09-19.md'},
+  {t:'n', name:'2026-10-01', path:'日记归档/2026-10-01.md'},
+  {t:'n', name:'2026-10-18', path:'日记归档/2026-10-18.md'},
+  {t:'n', name:'2026-11-01', path:'日记归档/2026-11-01.md'},
+  {t:'n', name:'2026-11-14', path:'日记归档/2026-11-14.md'},
+  {t:'d', name:'08_BotSpace'},
+  {t:'n', name:'Claude Code 团队的 10 个技巧', path:'03_Projects/AI/Claude Code 团队的 10 个技巧.md'},
+  {t:'n', name:'本地模型部署笔记', path:'03_Projects/AI/本地模型部署笔记.md'},
+  {t:'n', name:'智能体上下文工程', path:'03_Projects/AI/智能体上下文工程.md'},
+  {t:'n', name:'印尼行程', path:'03_Projects/零碎/旅游/印尼行程.md'},
+  {t:'n', name:'元旦旅游计划', path:'03_Projects/零碎/旅游/元旦旅游计划.md'},
+  {t:'n', name:'读书摘录', path:'03_Projects/零碎/读书/读书摘录.md'},
+  {t:'n', name:'工具对比', path:'03_Projects/零碎/工具/工具对比.md'}
+];
+const NOTES = {
+  '03_Projects/笔记系统/移动端同步方案.md': {
+    title:'移动端同步方案', kicker:'03_Projects · 笔记系统',
+    decl:'标签：#笔记系统 #同步　双链：[[笔记系统方案]]　创建：2025-10-01',
+    body:'<p>手机上只做低频的单篇查看与修改，高频整理仍在电脑上做。所以移动端不追求把整库搬过来，只追求「想找一篇时能找到、打开后能改、改完能存回去」。</p>' +
+         '<p><span class="hit">同步</span>最怕的是 quietly 失败：界面说「已保存」，远端其实没变。所以每一处失败都要大声说出来，并且把「找不到」「还没问到」「连不上」分开讲。</p>' +
+         '<table><tr><th>情况</th><th>界面说什么</th></tr><tr><td>找不到</td><td>这篇不在了，可能被改名或删掉了。</td></tr><tr><td>还没问到</td><td>文件名单还在加载…</td></tr><tr><td>连不上</td><td>连不上服务端，暂时用不了。</td></tr></table>' +
+         '<p>侧栏里的树第一次可用要等一次整树请求，实测 4.8~6.3 秒；断网时本机那份名单不能拿来画一棵可能是过期的树。</p>'
+  }
+};
+const CHECKS = [
+  ['c1','点放大镜 → 展开输入框，盖住「笔记库」标题'],
+  ['c2','用拼音打字 → 搜索结果就地替掉目录树'],
+  ['c3','点结果行 → 右边打开那篇、侧栏收起（没被「只失焦」吃掉）'],
+  ['c4','框有词时在结果行上滑动 → 列表滚动、笔记不打开、只取消输入状态、框仍显示'],
+  ['c5','点框内的叉 → 词清空，光标和键盘都还在'],
+  ['c6','框空时点空白 → 收成放大镜'],
+  ['c7','<b>框空时滑动 → 收成放大镜</b> + 取消输入状态 + 照常滚动（上一版做错，已改回）'],
+  ['c8','框有词时点空白 → 只失焦，框仍显示、词仍在'],
+  ['c9','点遮罩 / 侧栏外面的关闭键 → 直接关侧栏'],
+  ['c10','框有词时滑在输入框里 → 也失焦、框仍显示（照「不管滑在哪里」）'],
+  ['c11','点模拟键盘 → 不算框外，不收起'],
+  ['c12','拼音组字中切明暗 → 组字不断；组字中滑动 → 正常收尾、字不糊（留意会不会留半截拼音）'],
+  ['c13','<b>框空时点文件夹 → 文件夹照常响应，同时收成放大镜</b>'],
+  ['c14','<b>框有词时点结果行 → 那篇照常打开，框仍显示、词仍在</b>']
+];
+
+/* ---------- 状态 ---------- */
+const $ = id => document.getElementById(id);
+const S = {
+  side:true, expanded:false, focused:false, kbd:false, query:'',
+  panel:'tree', note:null, hit:false, theme:'light', tape:false,
+  dirOpen:new Set(['03_Projects']), tried:new Set(), logs:[]
+};
+const PERSISTENT_INPUT = 'search-input';
+
+/* ---------- 渲染：只换内容区，输入节点永不替换 ---------- */
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function render(skipPanel){
+  $('screen').dataset.side = String(S.side);
+  document.documentElement.dataset.theme = S.theme;
+  document.body.classList.toggle('tape', S.tape);
+  $('btn-menu').innerHTML = ICON.menu;
+  $('btn-search-open').innerHTML = ICON.search;
+  $('btn-search-open').hidden = S.expanded;
+  $('search-slot').hidden = !S.expanded;
+  $('kbd').hidden = !S.kbd;
+  $('search-input').setAttribute('aria-expanded', String(S.expanded));
+
+  if (!skipPanel) {
+    const keepScroll = $('panel').scrollTop;
+    let html = '<div class="blank-zone" id="blank-zone">空白 · 点这里 / 从这里往上滑</div>';
+    if (S.panel === 'search') {
+      const q = S.query.trim().toLowerCase();
+      const rows = TREE.filter(x => x.t === 'n' && (x.name.toLowerCase().includes(q) || x.path.toLowerCase().includes(q)));
+      html += rows.length
+        ? rows.map(x => '<button class="result-row" data-act="openResult" data-path="'+esc(x.path)+'" data-tap>' +
+            '<span class="r-name">'+esc(x.name)+'</span><span class="r-path">'+esc(x.path)+'</span></button>').join('')
+        : '<div class="panel-empty">没有匹配的笔记。这里是空白，可以点、也可以滑。</div>';
+    } else {
+      html += TREE.map((x,i) =>
+        '<button class="tree-row" data-act="'+(x.t==='d'?'toggleDir':'openNote')+'" data-path="'+esc(x.path||x.name)+'" data-tap>' +
+        '<span class="ico">'+(x.t==='d'?ICON.folder:ICON.note)+'</span><span class="nm">'+esc(x.name)+'</span></button>').join('');
+    }
+    html += '<div class="scroll-filler">（下面留白，方便手指真的把列表滑起来）</div>';
+    $('panel').innerHTML = html;
+    $('panel').scrollTop = keepScroll;
+  }
+
+  if (S.note && NOTES[S.note]) {
+    const n = NOTES[S.note];
+    $('kicker').textContent = n.kicker;
+    $('doc-title').textContent = n.title;
+    $('article').innerHTML = '<h2>'+esc(n.title)+'</h2><div class="decl">'+esc(n.decl)+'</div>'+n.body;
+    if (S.hit) {
+      const h = $('article').querySelector('.hit');
+      if (h) setTimeout(() => { $('article').scrollTop = Math.max(0, h.offsetTop - 120); }, 0);
+    }
+  } else {
+    $('kicker').textContent = '还没打开笔记';
+    $('doc-title').textContent = '从侧栏里找一篇';
+  }
+  $('state-line').textContent = '框：' + (S.expanded?'展开':'放大镜') + ' ｜ 词：' + (S.query?'有词':'空') +
+    ' ｜ 输入状态：' + (S.focused?'聚焦':'已取消') + ' ｜ 键盘：' + (S.kbd?'弹起':'收起') +
+    ' ｜ 面板：' + (S.panel==='search'?'结果':'树') + ' ｜ 侧栏：' + (S.side?'开':'关');
+  $('log-lines').innerHTML = S.logs.slice(0,6).map(l => '<div>'+l+'</div>').join('') || '<div>（还没有动作）</div>';
+  $('cl-list').innerHTML = CHECKS.map(([id,label]) =>
+    '<div class="cl-row'+(S.tried.has(id)?' done':'')+'" id="row-'+id+'">' +
+    '<span class="dot">✓</span><span class="txt">'+label+'</span>' +
+    '<button data-act="prepare" data-id="'+id+'" data-tap>准备</button></div>').join('');
+  $('tried-count').textContent = '试过 ' + S.tried.size + ' / ' + CHECKS.length;
+}
+function log(msg){ S.logs.unshift('<b>'+esc(msg.split(' → ')[0])+'</b>' + (msg.includes(' → ') ? ' → '+esc(msg.slice(msg.indexOf(' → ')+3)) : '')); if (S.logs.length > 20) S.logs.pop(); }
+function mark(id){ S.tried.add(id); }
+function focusSearch(){
+  S.focused = true; S.kbd = true;
+  render();
+  const el = $(PERSISTENT_INPUT);
+  if (!el.hidden) el.focus({preventScroll:true});
+}
+function cancelInputState(doBlur){
+  S.focused = false; S.kbd = false;
+  if (doBlur && document.activeElement === $(PERSISTENT_INPUT)) $(PERSISTENT_INPUT).blur();
+}
+
+/* ---------- 准备：把画面摆到某一条的起点 ---------- */
+function prepare(id){
+  S.side = true; S.note = null; S.hit = false;
+  S.expanded = false; S.focused = false; S.kbd = false; S.query = ''; S.panel = 'tree';
+  $(PERSISTENT_INPUT).value = '';
+  $('panel').scrollTop = 0;   // 「准备」要把画面摆回起点，别停在上一篇滚到的位置
+  const q = '同步';
+  switch(id){
+    case 'c1': case 'c9': break;
+    case 'c2': case 'c12': S.expanded = true; break;
+    case 'c3': case 'c4': case 'c5': case 'c8': case 'c10': case 'c14':
+      S.expanded = true; S.query = q; S.panel = 'search'; $(PERSISTENT_INPUT).value = q; break;
+    case 'c6': case 'c7': case 'c11': case 'c13': S.expanded = true; break;
+  }
+  render();
+  if (S.expanded) focusSearch();
+  log('准备 · 第 ' + id.slice(1) + ' 条的起点');
+}
+
+/* ---------- 动作 ---------- */
+function doAct(act, el){
+  if (act === 'toggleTheme') { S.theme = S.theme==='light'?'dark':'light'; render(); log('切明暗 · 输入框节点没换'); return; }
+  if (act === 'toggleTape') { S.tape = !S.tape; render(); return; }
+  if (act === 'reset') { S.tried.clear(); S.logs=[]; prepare('c1'); return; }
+  if (act === 'prepare') { prepare(el.dataset.id); return; }
+  if (act === 'openSide') { S.side = true; render(); log('点 ☰ · 拉开侧栏'); return; }
+  if (act === 'closeSide') { S.side = false; cancelInputState(true); render(); log('点关闭键 / 遮罩 · 直接关侧栏（可点物优先）'); mark('c9'); return; }
+  if (act === 'searchOpen') { S.expanded = true; focusSearch(); log('点放大镜 → 展开输入框、盖住「笔记库」标题'); mark('c1'); return; }
+  if (act === 'clearSearch') {
+    const inp = $(PERSISTENT_INPUT);
+    inp.value = ''; S.query = ''; S.panel = 'tree';
+    focusSearch();
+    log('点叉 → 词清空，光标和键盘都还在，侧栏回目录树'); mark('c5'); return;
+  }
+  if (act === 'openResult') { openNote(el.dataset.path, true); log('点结果行 → 右边打开那篇、侧栏收起（没被吃掉）'); mark('c3'); return; }
+  if (act === 'openNote') { openNote(el.dataset.path, false); log('点树行 → 打开笔记'); return; }
+  if (act === 'toggleDir') { log('点文件夹 → 展开 / 折叠（可点物照常触发）'); return; }
+  if (act === 'newNote') { log('点「新建」横条 → 照常触发（框外规则另外叠加）'); return; }
+  if (act === 'settings') { log('点「设置」横条 → 照常触发（框外规则另外叠加）'); return; }
+  if (act === 'edit') { log('点「编辑」→ 照常触发'); return; }
+}
+function openNote(path, hit){
+  S.note = NOTES[path] ? path : '03_Projects/笔记系统/移动端同步方案.md';
+  S.hit = !!hit; S.side = false; cancelInputState(true);
+  render();
+}
+
+/* ---------- 点 / 滑：用同一条指针通路，真机手指和鼠标都能试 ---------- */
+let g = null;
+function describe(t){
+  const a = t.closest && t.closest('[data-act]');
+  if (a) return ({closeSide:'关闭键/遮罩',openResult:'结果行',openNote:'树行',toggleDir:'文件夹',clearSearch:'叉',searchOpen:'放大镜',newNote:'新建',settings:'设置',edit:'编辑'})[a.dataset.act] || '可点的东西';
+  if (t.closest && t.closest('#kbd')) return '模拟键盘';
+  if (t.closest && t.closest('#search-input')) return '输入框里';
+  if (t.closest && t.closest('#search-slot')) return '搜索框内';
+  if (t.closest && t.closest('#panel')) return '列表里';
+  return '页面上';
+}
+function gestureStart(x,y,t){ g = {x,y,target:t,swiped:false}; }
+function gestureMove(x,y){
+  if (!g || g.swiped) return;
+  if (Math.hypot(x-g.x, y-g.y) > 8) { g.swiped = true; onSwipe(g); }
+}
+function gestureEnd(t){
+  if (!g) return;
+  const d = g; g = null;
+  if (d.swiped) return;
+  onTap(t || d.target, d);
+}
+/* 手势只认手机画布里发生的：页面自己往下滚去看清单，不该被当成「滑了搜索框之外」。 */
+const screenEl = $('screen');
+/* 触屏是主通路：浏览器一旦判定「这是滚动」，会取消 pointer 事件、不再给 pointerup，
+   所以滑动必须在 touchmove 当场认出来，不能等到抬手。 */
+screenEl.addEventListener('touchstart', e => { const t=e.touches[0]; if(t) gestureStart(t.clientX,t.clientY,e.target); }, {passive:true});
+screenEl.addEventListener('touchmove',  e => { const t=e.touches[0]; if(t) gestureMove(t.clientX,t.clientY); }, {passive:true});
+screenEl.addEventListener('touchend',   e => gestureEnd(g && g.target), {passive:true});
+screenEl.addEventListener('touchcancel',() => { g = null; }, {passive:true});
+/* 鼠标通路：电脑上用拖也能试同一套滑动 */
+screenEl.addEventListener('mousedown', e => gestureStart(e.clientX,e.clientY,e.target));
+screenEl.addEventListener('mousemove', e => gestureMove(e.clientX,e.clientY));
+screenEl.addEventListener('mouseup',   e => gestureEnd(e.target));
+/* 画布外的演示按钮（准备 / 明暗 / 标注 / 重置）走普通点击，不进手势判定 */
+document.addEventListener('click', e => {
+  if (e.target.closest('#screen')) return;
+  const a = e.target.closest('[data-act]');
+  if (a) doAct(a.dataset.act, a);
+});
+/* 第二条：发生在搜索框之外（键盘除外）的「点」和「滑」都要走这一层。
+   第三条不是替换它，是叠加上去：点就顺带触发被点到的东西，滑就顺带照常滚。
+   框空收起只切换头部的显隐，不重画面板（空词时面板本来就是目录树），
+   所以手指正在滚的列表不会被打断。 */
+function applyOutside(){
+  if (!S.expanded) return '搜索本来就没展开，什么也不用做';
+  if (!S.query.trim()) {
+    S.expanded = false; cancelInputState(true);
+    S.panel = 'tree'; $(PERSISTENT_INPUT).value = '';
+    return '框空 → 收成放大镜（词清掉、回目录树、输入状态取消）';
+  }
+  cancelInputState(true);
+  return '框有词 → 只取消输入状态，框仍显示、词仍在';
+}
+function inKeyboard(t, d){
+  return !!(d && d.inKbd) || !!(t && t.closest && t.closest('#kbd'));
+}
+function onTap(t, d){
+  // 模拟键盘：按「输入法键盘除外」，既不算框外，也不叠加第三条
+  if (inKeyboard(t, d)) { log('点模拟键盘 → 不算框外，不收起'); mark('c11'); return; }
+  // 搜索框内部（放大镜 / 输入框 / 叉）：也不算框外
+  if (t.closest && (t.closest('#search-slot') || t.closest('#btn-search-open'))) {
+    const a = t.closest('[data-act]');
+    if (a) doAct(a.dataset.act, a); else focusSearch();
+    log('点搜索框内 → 聚焦 / 执行框内按钮，不算框外');
+    return;
+  }
+  const actEl = t.closest && t.closest('[data-act]');
+  const what = describe(t);
+  const wasEmpty = S.expanded && !S.query.trim();
+  if (actEl) doAct(actEl.dataset.act, actEl);   // 第三条：可点物照常触发
+  const outcome = applyOutside();               // 第二条：点没点到东西都要走
+  render(true);
+  log((actEl ? '点'+what+' → 照常触发它；同时 ' : '点空白 → ') + outcome);
+  if (actEl) { if (wasEmpty) mark('c13'); else if (S.expanded) mark('c14'); }
+  else { if (wasEmpty) mark('c6'); else if (S.expanded) mark('c8'); }
+}
+function onSwipe(d){
+  const t = d.target;
+  const where = describe(t);
+  if (inKeyboard(t, d)) {                       // 键盘上滑：不算框外，但滚动照常
+    log('滑在模拟键盘上 → 不算框外，不收起、不改输入状态；滚动照常');
+    return;
+  }
+  const wasEmpty = S.expanded && !S.query.trim();
+  const outcome = applyOutside();               // 第二条：框空收起 / 有词只失焦
+  render(true);                                 // 跳过列表重画，正在进行的滚动不被打断
+  log('滑动（'+where+'） → '+outcome+'；同时取消输入状态 + 照常响应滚动');
+  if (t.closest && t.closest('#search-input')) mark('c10');
+  if (wasEmpty) mark('c7'); else if (S.expanded) mark('c4');
+  mark('c12');
+}
+
+/* ---------- 输入：真输入法通路，不走 value 注入 ---------- */
+const inp = $(PERSISTENT_INPUT);
+inp.addEventListener('input', () => {
+  S.query = inp.value;
+  S.panel = S.query.trim() ? 'search' : 'tree';
+  render();
+  log('打字「'+S.query+'」 → ' + (S.query.trim()?'结果就地替掉目录树':'词空了，回目录树'));
+  if (S.query.trim()) mark('c2');
+});
+inp.addEventListener('focus', () => { S.focused = true; S.kbd = true; });
+inp.addEventListener('compositionstart', () => { window.__comp = (window.__comp||0)+1; });
+inp.addEventListener('compositionend', () => { window.__compEnd = (window.__compEnd||0)+1; });
+
+/* ---------- 启动 ---------- */
+$('kbd-keys').innerHTML = 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').map(c=>'<span>'+c+'</span>').join('');
+render();
+window.S = S; window.prepare = prepare; window.__inputNode = inp;   // 给验收脚本用
+</script>
+</body>
+</html>
