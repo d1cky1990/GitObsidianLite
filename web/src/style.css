@@ -269,7 +269,9 @@ a { color: inherit; text-decoration: none; }
     transition: none;
   }
   .sidebar[hidden] { display: flex !important; transform: none; visibility: hidden; }
-  .scrim { display: none !important; }
+  /* 基础段的 .scrim[hidden] 有 display:block!important（淡出动画要用），特异性
+     比这里的 .scrim 高；不写成同等特异性，宽屏就会露出一片遮罩。 */
+  .scrim, .scrim[hidden] { display: none !important; }
   .main { margin-left: 304px; }
   #shell.sidebar-collapsed .main { margin-left: 0; }
   #btn-close { position: static; } /* 宽屏没有遮罩，关闭键在正文顶栏 ☰ 旁边 */
