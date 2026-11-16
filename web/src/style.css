@@ -769,3 +769,84 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
   border-bottom: 1px solid var(--color-text-faint);
   pointer-events: none;
 }
+/* ============================================================
+   #64 · 空状态与阅读态四档失败（只追加，不改 #61 已有规则）
+   ============================================================ */
+
+/* 空状态：一句主提示 + 最近打开。第一次无记录时仍完整留白，不转圈、不像出错。 */
+.empty-state {
+  max-width: 784px; margin-inline: auto;
+  padding: var(--space-16) var(--space-5) var(--space-10);
+}
+.empty-prompt {
+  font-family: var(--font-reading); font-size: 18px; line-height: 1.6;
+  color: var(--color-text); margin: 0;
+}
+.recent-list { margin-top: var(--space-8); border-top: 1px solid var(--color-border); }
+.recent-item {
+  display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto;
+  align-content: center; column-gap: var(--space-3);
+  min-height: 64px; padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  color: var(--color-text); text-decoration: none;
+}
+.recent-item:hover { background: var(--color-hover); }
+.recent-item:active { background: var(--color-pressed); }
+.recent-name {
+  grid-column: 1; grid-row: 1; font-size: 15px; line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.recent-parent {
+  grid-column: 1; grid-row: 2; font-size: 12px; line-height: 18px;
+  color: var(--color-text-secondary); overflow-wrap: anywhere;
+}
+/* 「已失效」只在内层 12px 危险色文字上，整条不变红、不消失、不刺眼。 */
+.recent-invalid {
+  grid-column: 2; grid-row: 1 / span 2; align-self: center;
+  font-size: 12px; line-height: 18px; color: var(--color-danger);
+}
+
+/* 阅读态：R-1 一小段加载；R-3 / R-4 落位。R-2 的中性占位由插件产出，见下面复核。 */
+.read-state {
+  max-width: 784px; margin-inline: auto;
+  padding: var(--space-10) var(--space-5);
+  font-family: var(--font-reading); color: var(--color-text);
+}
+.read-msg { font-size: 17px; line-height: 1.85; margin: 0 0 var(--space-5); }
+.read-loading .read-msg { color: var(--color-text-secondary); } /* 静态一小段，不整屏骨架 */
+.read-offline .read-msg { color: var(--color-warning); }         /* 连不上用 warning，不是 danger */
+.read-retry {
+  min-height: 44px; padding: var(--space-2) var(--space-4); margin-right: var(--space-3);
+  background: var(--color-accent); color: var(--color-on-accent);
+  border: none; border-radius: var(--radius-sm);
+  font-family: var(--font-ui); font-size: 15px; cursor: pointer;
+}
+.read-retry:active { background: var(--color-accent-pressed); }
+.read-back {
+  display: inline-block; min-height: 44px; line-height: 44px;
+  color: var(--color-accent); font-size: 15px; text-decoration: underline;
+}
+
+/* R-2 复核（明暗两套逐项）：名单未到的中性态与「确实找不到 / 连不上」分得开。
+   #61 已用语义 token 落地，这里在深色下把三档再钉一次，防止将来 token 漂移时混色：
+   中性 = text-secondary + border；确实找不到 = danger；连不上 = warning。文字也各自说清。
+   表格 / 代码块 / 声明区 / 标签 / 勾选框仍沿用 #61 的 surface / code / chip / border-strong
+   两套 token，深色下不反相、不写死颜色。 */
+:root[data-theme="dark"] .md .img-pending,
+:root[data-theme="dark"] .md a.wikilink-unknown {
+  color: var(--color-text-secondary); border-color: var(--color-border);
+}
+:root[data-theme="dark"] .md .img-broken,
+:root[data-theme="dark"] .md .wikilink-broken { color: var(--color-danger); }
+
+/* 深色正文图片不反相：默认降亮度（#61 的 brightness(.85)，减少白底截图眩光）；
+   进入全屏查看恢复原亮度，图片里的字、代码与颜色关系不靠反相改变。
+   特异性高于 #61 那条；:fullscreen 与 img-fullview 两条入口分开写，避免老引擎因
+   一条不认的选择器把整段规则丢掉。 */
+:root[data-theme="dark"] .md img:fullscreen,
+:root[data-theme="dark"] .md img.img-fullview { filter: brightness(1); }
+:root[data-theme="dark"] .md img:-webkit-full-screen { filter: brightness(1); }
+
+/* 不照抄原型写歪的取值（#55 C 类）：勾选框仍是 18×18 看见 + #61 的 44×44 外层
+   命中区（不改、不去掉）；提示条沿用普通 2.5s / 带动作 8s（不改形态与时长）；
+   暗色图片靠降亮度而非 invert()。这三条本段都不复刻。 */

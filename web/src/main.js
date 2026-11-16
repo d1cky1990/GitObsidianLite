@@ -39,6 +39,15 @@ import './style.css';
 // 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
 import { initLayout } from './layout.js';
 import { getSelectedFolder, initTree, selectPath, notifySidebarShown } from './tree.js';
+// #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
+// 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
+import {
+  addRecent, removeRecent, replaceRecentPath, readRecent, writeRecent,
+  checkRecents, recheckOne,
+} from './recent.js';
+import {
+  emptyStateHtml, readingStateHtml, classifyReadError, GONE_MESSAGE, REMOVE_LABEL,
+} from './render-states.js';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
@@ -532,6 +541,10 @@ const state = {
   online: null, // null = 还没问过；true / false = 那次很轻的版本身份请求的结果
   pendingHit: null, // { path, query } —— 刚点的搜索结果，打开后要滚到命中那一段
   hitMark: null, // 已经滚过去的那处，补渲染时要把它画回来
+
+  // ---- #64 空状态与阅读态失败落位 ----
+  readState: null, // { kind:'loading'|'missing'|'offline', path } —— R-1 加载 / R-3 / R-4 落位；null = 正常阅读
+  emptyActive: false, // 没打开笔记时正文区显示空状态（出现那一刻后台核对最近打开）
 };
 
 function esc(s) {
@@ -559,10 +572,13 @@ function navigate() {
     openFile(decodeURIComponent(hash.slice(6)));
   } else if (hash.startsWith('/dir/')) {
     state.view = 'list';
+    state.emptyActive = false; state.readState = null; // #64 进目录页就收起空状态 / 失败态
     loadDir(decodeURIComponent(hash.slice(5)));
   } else {
+    // #64：没打开笔记 → 正文区空状态。不 loadDir('')：断网时那次目录请求失败会
+    // 弹一句 toast，正是判据 3「断网时空状态不弹提示」不许的；核对由 showEmptyState 发起。
     state.view = 'list';
-    loadDir('');
+    showEmptyState();
   }
 }
 
@@ -583,12 +599,17 @@ async function openFile(path) {
     state.pendingHit = null;
     state.hitMark = null;
   }
-  state.busy = true; render();
+  // #64 R-1：正文还在路上 —— 一小段加载落位在正文区，不是空白页、不整屏骨架乱跳。
+  // 不复用 list 态的 busy 转圈：那会把「打开一篇」画成整个目录页在加载。
+  state.readState = { kind: 'loading', path };
+  state.emptyActive = false;
+  render();
   try {
     // 双链要在**渲染期**就判得出解不解得开，但索引本身（一次全树拉取，实测 3~5 秒）
     // 不能拦在这次打开的路上——那会把打开一篇笔记从 1 秒拖成 4 秒。所以：预热，不 await。
     // 索引还没到就先按中性「不知道」渲染，到了由 ensureIndex 补一次 render 换掉。
-    // 索引拿不到不算打开失败：正文照读。
+    // 索引拿不到不算打开失败：正文照读。（#64 R-2：名单到了由 repaintWithIndex 整篇
+    // 重画换掉中性占位，滚动位置与声明区展开态由那处自带，本票不改它。）
     ensureIndex().catch(() => {});
     const file = await readFile(path);
     state.view = 'editor';
@@ -596,14 +617,22 @@ async function openFile(path) {
     state.mode = 'read'; state.draft = file.content;
     // 新建完直接进来的那一次：跳过阅读态，落笔就写（空笔记停在阅读态没有意义）
     if (state.openInEdit === path) { state.mode = 'edit'; state.openInEdit = null; }
-    state.busy = false;
+    state.readState = null;
+    recordOpen(path); // #64 每次成功打开就置顶、去重、截断到 5 条
   } catch (e) {
-    state.busy = false;
-    toast(e.message);
-    location.hash = '#/';
+    // #64 三档失败拆开，不再一句 toast(e.message) + 回根目录合并了事。
+    const kind = classifyReadError(e);
+    if (kind === 'password') {
+      // 要密码：api.js 已派发 need-password 弹解锁框，背后不喊没连上、不 toast、
+      // 不回根目录；保留当前 hash，解锁成功后 reload 会重新打开这一篇。
+      state.readState = null;
+      state.emptyActive = true;
+    } else {
+      state.readState = { kind, path }; // R-3 这篇不在了 / R-4 连不上，落位在正文区
+    }
   }
   render();
-  if (state.pendingHit) applyPendingHit();
+  if (state.view === 'editor' && state.pendingHit && !state.readState) applyPendingHit();
 }
 
 /** 打开某目录（走 hash 路由，好让返回键能用）。 */
@@ -733,6 +762,11 @@ async function saveCopy(which) {
 /* ---------- 渲染 ---------- */
 
 function render() {
+  // #64：阅读加载 / 三档失败落位优先；其次是没打开笔记时的空状态。
+  // 成功打开后 readState=null、emptyActive=false、view=editor，落到原 renderEditor()，
+  // 正文渲染结果与改动前逐字节一致（本票不碰 md 实例 / 插件顺序 / <article class="md">）。
+  if (state.readState) { renderReadState(); return; }
+  if (state.emptyActive && state.view !== 'editor') { renderEmptyState(); return; }
   if (state.view === 'editor') renderEditor();
   else renderList();
 }
@@ -1026,6 +1060,7 @@ async function doDelete(path) {
   }
   state.undo = { path: src.path, content: src.content, dir: dirOf(path) };
   state.busy = false;
+  removeRecentFromStore(path); // #64 应用内删掉的那篇（含正在读的）→ 从最近打开去掉那条
   // 删的正是当前打开的那篇 → 回到它所在的目录
   if (state.view === 'editor') gotoDir(state.undo.dir);
   else await loadDir(state.path);
@@ -1119,6 +1154,7 @@ async function relocate(from, to, verb) {
   }
 
   state.busy = false;
+  replaceRecentPathInStore(from, to); // #64 改名 / 移动 → 直接换成新路径（搬走的不追）
   if (state.view === 'editor') location.hash = '#/edit/' + encodeURIComponent(to);
   else gotoDir(dirOf(to));
   toast(verb === 'rename' ? '已改名为 ' + baseOf(to) : '已移到 ' + (dirOf(to) || '根目录'));
@@ -1504,6 +1540,94 @@ document.addEventListener('visibilitychange', () => {
 });
 
 window.addEventListener('hashchange', navigate);
+
+/* ---------- #64：空状态与阅读态失败落位（只在这里接线，不改上面的函数体） ---------- */
+
+// 本机的「最近打开」只有路径；已失效标注是内存态（上一次核对的结论，不写盘、不是永久判决）。
+let recentPaths = readRecent();
+let recentInvalid = new Set();
+
+function recordOpen(path) {
+  recentPaths = addRecent(recentPaths, path);
+  writeRecent(recentPaths);
+}
+function removeRecentFromStore(path) {
+  recentPaths = removeRecent(recentPaths, path);
+  recentInvalid.delete(path);
+  writeRecent(recentPaths);
+  if (state.emptyActive) render();
+}
+function replaceRecentPathInStore(from, to) {
+  recentPaths = replaceRecentPath(recentPaths, from, to);
+  recentInvalid.delete(from);
+  writeRecent(recentPaths);
+}
+
+// 真 probe：复用 GET /api/file?path= 的 404。成功 = 在；404 = 确认真不在；
+// 断网 / 5xx / 要密码一律「问不到」，由 checkRecents 整批不标失效、不弹提示。
+function recentProbe(path) {
+  return readFile(path).then(
+    () => null,
+    (e) => ({ status: e && e.status, notFound: e && e.notFound, message: e && e.message })
+  );
+}
+
+// 空状态出现的那一刻：先立即画完整空状态（首次无记录也不转圈、不像出错），
+// 再后台并行各问一次；一分钟内同批不重复（checkRecents 自己判）。核对期间不显示
+// 「核对中」，条目不闪不灰不挡；结果到了就地标「已失效」；问不到整批不标、不弹提示。
+function showEmptyState() {
+  state.readState = null;
+  state.emptyActive = true;
+  render();
+  verifyRecentsOnEmpty();
+}
+
+async function verifyRecentsOnEmpty() {
+  const snapshot = recentPaths.slice();
+  try {
+    const r = await checkRecents(snapshot, { probe: recentProbe });
+    if (!r.ran || r.invalid === null) return; // 没发请求 / 整批问不到：保持不变，不弹提示
+    recentInvalid = new Set(r.invalid);
+    if (state.emptyActive) render(); // 仍停在空状态才就地重画
+  } catch (e) { /* 核对失败一律不弹提示、不标失效 */ }
+}
+
+function renderEmptyState() {
+  app.innerHTML = emptyStateHtml({ recents: recentPaths, invalid: [...recentInvalid] }) + renderToast();
+}
+function renderReadState() {
+  const rs = state.readState;
+  app.innerHTML = '<main class="editor-body">' +
+    readingStateHtml(rs.kind, { path: rs.path }) + '</main>' + renderToast();
+}
+
+// 点已失效那条：重新问一次（标注只是上一次结论）。回来了正常打开并撤标注；
+// 真不在 → 那句话 + 提示条「从列表里去掉」（不自动删，点了才删）；问不到不冒充「不在了」。
+async function handleInvalidRecent(path) {
+  const kind = await recheckOne(path, { probe: recentProbe });
+  if (kind === 'exists') {
+    recentInvalid.delete(path);
+    if (state.emptyActive) render();
+    location.hash = '#/edit/' + encodeURIComponent(path);
+  } else if (kind === 'missing') {
+    toast(GONE_MESSAGE, { label: REMOVE_LABEL, run: () => removeRecentFromStore(path) });
+  } else {
+    toast('连不上，暂时确认不了这篇在不在');
+  }
+}
+
+// 独立的一段点击接线，不挤进上面那个 data-act 分发器（降低并行合并冲突）。
+document.addEventListener('click', (e) => {
+  const inv = e.target.closest && e.target.closest('[data-recent-invalid]');
+  if (inv) {
+    e.preventDefault(); // 不直接跳去打开，先重新问一次
+    handleInvalidRecent(inv.dataset.recentPath);
+    return;
+  }
+  const retry = e.target.closest && e.target.closest('[data-read-retry]');
+  if (retry) { openFile(retry.dataset.readRetry); return; }
+});
+
 resetFab();
 navigate();
 pendingChecks.replay(); // #60：冷启动也补发一次没送到的勾选
