@@ -11,6 +11,7 @@ import {
   buildTree, sortEntries, refreshTree, getSelectedFolder, setSelectedFolder, selectPath,
   indentFor, ancestorsOf, isAncestor, reconcileState, loadTreeState, saveTreeState,
   shouldAutoScroll, TREE_STATE_KEY, flattenVisible, rowHtml, renderTreeHtml,
+  createTreeController, initTree, notifySidebarShown,
 } from './tree.js';
 
 test('契约：六个导出都是函数', () => {
@@ -442,4 +443,223 @@ test('renderTreeHtml：加载↔就绪切换时三个容器始终常驻，不增
   assert.equal(blocks(ready).length, 3, '两态容器数量一致，只切 hidden');
   assert.match(loading, /<div class="tree">/);
   assert.match(ready, /<div class="tree">/);
+});
+
+// ==========================================================================
+// #62 切片 D：状态机 / 跨票接口 / DOM 接线（注入假依赖，可在 node 里跑）
+// ==========================================================================
+
+function mockTreeDoc() {
+  const nodes = {
+    'tree-view': { innerHTML: '' },
+    'sidebar-content': { scrollTop: 0 },
+  };
+  const listeners = {};
+  const scrolled = [];
+  return {
+    getElementById: (id) => nodes[id] || null,
+    querySelector: (sel) => (sel === '[data-tree-current="1"]'
+      ? { scrollIntoView: (o) => scrolled.push(o || {}) } : null),
+    addEventListener: (type, fn) => { (listeners[type] || (listeners[type] = [])).push(fn); },
+    _nodes: nodes, _listeners: listeners, _scrolled: scrolled,
+    _emit(type, e) { for (const fn of (listeners[type] || [])) fn(e); },
+  };
+}
+
+function makeCtl(overrides) {
+  const o = overrides || {};
+  const doc = o.doc || mockTreeDoc();
+  const storage = o.storage || mockStorage();
+  const ctl = createTreeController({
+    doc, storage,
+    getNotePaths: o.getNotePaths || (() => ['日记/a.md', 'c.md']),
+    reloadIndex: o.reloadIndex,
+    getCurrentNote: o.getCurrentNote || (() => ''),
+  });
+  return { ctl, doc, storage };
+}
+
+test('createTreeController：初始加载态，onLoading 后侧栏说清在等什么、不画空树', () => {
+  const { ctl, doc } = makeCtl();
+  assert.equal(ctl.model.status, 'loading');
+  assert.equal(ctl.model.selectedFolder, '');
+  assert.equal(ctl.model.selectionMade, false);
+  ctl.onLoading();
+  const html = doc._nodes['tree-view'].innerHTML;
+  assert.match(html, /正在读取笔记名单/);
+  assert.match(html, /<div class="tree-rows"[^>]* hidden><\/div>/);
+  assert.doesNotMatch(html, /<(button|a)[^>]*tree-row/);
+});
+
+test('onReady：从本机名单建树、切就绪态、画出行，三态容器只切 hidden', () => {
+  const { ctl, doc } = makeCtl();
+  ctl.onReady();
+  assert.equal(ctl.model.status, 'ready');
+  assert.deepEqual(ctl.model.notePaths, ['日记/a.md', 'c.md']);
+  const html = doc._nodes['tree-view'].innerHTML;
+  assert.match(html, /data-tree-dir="日记"/);
+  assert.match(html, /href="#\/edit\//);
+  assert.match(html, /<div class="tree-rows">/);
+  assert.match(html, /data-tree-status="loading"[^>]*hidden/);
+  assert.match(html, /data-tree-status="offline"[^>]*hidden/);
+});
+
+test('onOffline：明说连不上 + 重试，不画空树、不拿过期名单硬画', () => {
+  const { ctl, doc } = makeCtl();
+  ctl.onReady();
+  ctl.onOffline();
+  assert.equal(ctl.model.status, 'offline');
+  assert.deepEqual(ctl.model.tree, [], '断网时清掉名单');
+  const html = doc._nodes['tree-view'].innerHTML;
+  assert.match(html, /连不上/);
+  assert.match(html, /data-tree-retry/);
+  assert.doesNotMatch(html, /<(button|a)[^>]*tree-row/);
+});
+
+test('refreshTree：写后就地重建全库名单，成功后树立刻是新世界，不等切后台', async () => {
+  let paths = ['旧/a.md'];
+  let reloads = 0;
+  const { ctl, doc } = makeCtl({
+    getNotePaths: () => paths,
+    reloadIndex: () => { reloads += 1; paths = ['旧/a.md', '新/刚建的.md']; return Promise.resolve(); },
+  });
+  ctl.onReady();
+  assert.match(doc._nodes['tree-view'].innerHTML, /旧/);
+  ctl.refreshTree();
+  assert.equal(reloads, 1, '只经 reloadIndex 重建，零新增取数请求');
+  assert.equal(ctl.model.status, 'loading', '重拉期间保持加载态');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(ctl.model.status, 'ready');
+  assert.match(doc._nodes['tree-view'].innerHTML, /刚建的/);
+});
+
+test('refreshTree：重拉失败进断网态，不拿过期名单硬画', async () => {
+  const { ctl, doc } = makeCtl({
+    getNotePaths: () => ['旧/a.md'],
+    reloadIndex: () => Promise.reject(new Error('offline')),
+  });
+  ctl.onReady();
+  ctl.refreshTree();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(ctl.model.status, 'offline');
+  assert.match(doc._nodes['tree-view'].innerHTML, /连不上/);
+  assert.doesNotMatch(doc._nodes['tree-view'].innerHTML, /旧/);
+});
+
+test('setSelectedFolder：选中状态写进本机记录，换 controller 用同一 storage 能读回', () => {
+  const storage = mockStorage();
+  const first = makeCtl({ storage, doc: mockTreeDoc() });
+  first.ctl.onReady();
+  first.ctl.setSelectedFolder('日记');
+  assert.equal(first.ctl.getSelectedFolder(), '日记');
+  const saved = JSON.parse(storage._map.get(TREE_STATE_KEY));
+  assert.equal(saved.selectedFolder, '日记');
+  assert.equal(saved.selectionMade, true);
+  const second = makeCtl({ storage, doc: mockTreeDoc() });
+  assert.equal(second.ctl.getSelectedFolder(), '日记', '跨会话恢复');
+  assert.equal(second.ctl.model.selectionMade, true);
+});
+
+test('selectPath：祖先全展开、那行高亮、选中退回所在文件夹、自动滚到附近', () => {
+  const { ctl, doc } = makeCtl({ getNotePaths: () => ['一/二/三/深.md', '项目/x.md'] });
+  ctl.onReady();
+  ctl.model.collapsed.add('一');
+  ctl.model.collapsed.add('一/二');
+  ctl.selectPath('一/二/三/深.md');
+  assert.equal(ctl.model.currentPath, '一/二/三/深.md');
+  assert.equal(ctl.model.selectedFolder, '一/二/三');
+  assert.ok(!ctl.model.collapsed.has('一'), '祖先全展开');
+  assert.ok(!ctl.model.collapsed.has('一/二'));
+  assert.equal(doc._scrolled.length, 1, '滚到当前篇附近');
+  assert.match(doc._nodes['tree-view'].innerHTML, /data-tree-current="1"/);
+});
+
+test('selectPath：同一次拉开期间手动滚过就不被抢回', () => {
+  const { ctl, doc } = makeCtl({ getNotePaths: () => ['一/二/深.md'] });
+  ctl.onReady();
+  ctl.markUserScrolled();
+  ctl.selectPath('一/二/深.md');
+  assert.equal(doc._scrolled.length, 0, '用户手动滚过，不自动抢回');
+});
+
+test('selectPath：打开的那篇压过手动折叠（那支实际折不上）', () => {
+  const { ctl, doc } = makeCtl({ getNotePaths: () => ['日记/2026/a.md'] });
+  ctl.onReady();
+  ctl.selectPath('日记/2026/a.md');
+  ctl.onFolderClick('日记');        // 事后手动折当前篇那一支
+  ctl.onFolderClick('日记/2026');
+  assert.match(doc._nodes['tree-view'].innerHTML, /data-tree-current="1"/, '当前篇仍展开可见');
+});
+
+test('onFolderClick：点一下展开 + 选中同时发生；再点折上但选中与落点保留', () => {
+  const { ctl, doc } = makeCtl();
+  ctl.onReady();
+  ctl.model.collapsed.add('日记');
+  ctl.onFolderClick('日记');
+  assert.ok(!ctl.model.collapsed.has('日记'), '展开');
+  assert.equal(ctl.getSelectedFolder(), '日记', '同时选为选中的文件夹');
+  assert.match(doc._nodes['tree-view'].innerHTML, /is-selected/);
+  ctl.onFolderClick('日记');
+  assert.ok(ctl.model.collapsed.has('日记'), '折上');
+  assert.equal(ctl.getSelectedFolder(), '日记', '选中保留');
+});
+
+test('onFolderClick：根目录行同样可选中（落点＝根）', () => {
+  const { ctl, doc } = makeCtl();
+  ctl.onReady();
+  ctl.onFolderClick('');
+  assert.equal(ctl.getSelectedFolder(), '');
+  assert.equal(ctl.model.selectionMade, true);
+  assert.match(doc._nodes['tree-view'].innerHTML, /is-selected/);
+});
+
+test('DOM 接线：点文件夹行走 data-tree-dir 委托，点重试走 data-tree-retry', () => {
+  const { ctl, doc } = makeCtl({
+    getNotePaths: () => ['日记/a.md'],
+    reloadIndex: () => Promise.resolve(),
+  });
+  ctl.onReady();
+  doc._emit('click', { target: { closest: (sel) => (sel === '[data-tree-dir]' ? { dataset: { treeDir: '日记' } } : null) } });
+  assert.equal(ctl.getSelectedFolder(), '日记');
+  doc._emit('click', { target: { closest: (sel) => (sel === '[data-tree-retry]' ? {} : null) } });
+  assert.equal(ctl.model.status, 'loading', '重试进加载态');
+});
+
+test('notifySidebarShown：侧栏每次出现重置滚动保护、按打开的那篇重新摆好', () => {
+  const { ctl, doc } = makeCtl({ getNotePaths: () => ['日记/2026/a.md'] });
+  ctl.onReady();
+  ctl.selectPath('日记/2026/a.md');
+  ctl.markUserScrolled();     // 这次拉开里手动滚开
+  ctl.onFolderClick('日记');  // 手动把当前篇那支折一下
+  ctl.notifySidebarShown();   // 下一次拉开
+  assert.equal(ctl.model.userScrolled, false, '新一次拉开重置');
+  assert.ok(doc._scrolled.length >= 1, '重新定位');
+  assert.match(doc._nodes['tree-view'].innerHTML, /data-tree-current="1"/);
+});
+
+test('找不到路径静默丢弃：旧折叠/选中在名单里不存在时不报错不提示', () => {
+  const storage = mockStorage();
+  saveTreeState(storage, {
+    collapsed: new Set(['被改名的目录', '日记']),
+    selectedFolder: '被改名的目录', selectionMade: true,
+  });
+  const { ctl } = makeCtl({ storage, getNotePaths: () => ['日记/a.md', 'c.md'] });
+  assert.doesNotThrow(() => ctl.onReady());
+  assert.deepEqual([...ctl.model.collapsed], ['日记']);
+  assert.equal(ctl.model.selectedFolder, '');
+  assert.equal(ctl.model.selectionMade, false);
+  const saved = JSON.parse(storage._map.get(TREE_STATE_KEY));
+  assert.deepEqual(saved.collapsed, ['日记'], '对账结果静默落盘');
+});
+
+test('initTree 模块级转发：导出名指向真实现（选中落本机记录、刷新不抛）', () => {
+  const storage = mockStorage();
+  const doc = mockTreeDoc();
+  initTree({ doc, storage, getNotePaths: () => ['a.md'], reloadIndex: () => Promise.resolve() });
+  setSelectedFolder('日记');
+  assert.equal(getSelectedFolder(), '日记');
+  assert.equal(JSON.parse(storage._map.get(TREE_STATE_KEY)).selectedFolder, '日记');
+  assert.doesNotThrow(() => refreshTree());
+  assert.doesNotThrow(() => selectPath('a.md'));
+  assert.doesNotThrow(() => notifySidebarShown());
 });
