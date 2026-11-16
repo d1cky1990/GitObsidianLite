@@ -216,3 +216,130 @@ function escHtml(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+// ==========================================================================
+// 切片 C：摊平可见行 + 树行 HTML + 加载三态
+// ==========================================================================
+
+/**
+ * 把树摊平成可见行（第一行是根行）。目录折在 collapsed 里就不铺子树；
+ * 但「打开的那篇」那一支强制展开（压过手动折叠，是定稿代价不是缺陷）。
+ * 每行带缩进、折角记号、选中 / 当前两个独立记号、展开态。
+ */
+export function flattenVisible(tree, opts) {
+  const o = opts || {};
+  const collapsed = toSet(o.collapsed);
+  const currentPath = typeof o.currentPath === 'string' ? o.currentPath : '';
+  const selectedFolder = typeof o.selectedFolder === 'string' ? o.selectedFolder : '';
+  const selectionMade = !!o.selectionMade;
+  const topNodes = Array.isArray(tree) ? tree : [];
+  const rows = [];
+
+  const rootNoteCount = topNodes.reduce((sum, n) => sum + (n && n.noteCount ? n.noteCount : 0), 0);
+  rows.push({
+    type: 'dir', name: '根目录', path: '', depth: 0, noteCount: rootNoteCount,
+    indentPx: 12, corner: false,
+    selected: selectionMade && selectedFolder === '',
+    current: false, expanded: true, isRoot: true,
+  });
+
+  function isExpanded(dir) {
+    if (!collapsed.has(dir)) return true;
+    return isAncestor(dir, currentPath);
+  }
+
+  function walk(nodes) {
+    for (const n of (Array.isArray(nodes) ? nodes : [])) {
+      if (!n) continue;
+      const ind = indentFor(n.depth);
+      const expanded = n.type === 'dir' && isExpanded(n.path);
+      rows.push({
+        type: n.type, name: n.name, path: n.path, depth: n.depth,
+        noteCount: n.noteCount,
+        indentPx: ind.px, corner: ind.corner,
+        selected: selectionMade && n.type === 'dir' && n.path === selectedFolder,
+        current: n.type === 'note' && n.path === currentPath,
+        expanded, isRoot: false,
+      });
+      if (n.type === 'dir' && expanded) walk(n.children);
+    }
+  }
+  walk(topNodes);
+  return rows;
+}
+
+/** 一行的 HTML。折叠箭头 / 文件夹 / 笔记图标都走 icons.js 的内联 SVG。 */
+export function rowHtml(row) {
+  const r = row || {};
+  const isDir = r.type === 'dir';
+  const cls = [
+    'tree-row',
+    r.isRoot ? 'is-root' : '',
+    isDir ? 'is-dir' : 'is-note',
+    r.selected ? 'is-selected' : '',
+    r.current ? 'is-current' : '',
+  ].filter(Boolean).join(' ');
+
+  let tag, extra;
+  if (isDir) {
+    tag = 'button';
+    extra = 'type="button" data-tree-dir="' + escHtml(r.path) + '"';
+  } else {
+    tag = 'a';
+    extra = 'href="#/edit/' + encodeURIComponent(r.path || '') + '"';
+  }
+  const attrs = [
+    'class="' + cls + '"',
+    'style="padding-left:' + (Number(r.indentPx) || 12) + 'px"',
+  ];
+  if (r.current) attrs.push('data-tree-current="1"');
+
+  // 第 5 层起：行首图标前加 6×6 折角层级记号（不是图标、不响应点击）。
+  const corner = r.corner ? '<span class="tree-corner" aria-hidden="true"></span>' : '';
+  const chevronBody = isDir ? icon(r.expanded ? 'chevron-down' : 'chevron-right', 12) : '';
+  const chevron = '<span class="tree-chevron" aria-hidden="true">' + chevronBody + '</span>';
+  const glyph = '<span class="tree-ic" aria-hidden="true">' + icon(isDir ? 'folder' : 'note', 18) + '</span>';
+  const name = '<span class="tree-name">' + escHtml(r.name) + '</span>';
+  const count = isDir && r.noteCount
+    ? '<span class="tree-count">' + escHtml(r.noteCount) + '</span>'
+    : '';
+
+  return '<' + tag + ' ' + extra + ' ' + attrs.join(' ') + '>'
+    + corner + chevron + glyph + name + count
+    + '</' + tag + '>';
+}
+
+function loadingBlock(active) {
+  return '<div class="tree-status tree-loading" data-tree-status="loading"' + (active ? '' : ' hidden') + '>'
+    + '<p class="tree-status-title">正在读取笔记名单…</p>'
+    + '<p class="tree-status-sub">首次打开整库约需几秒</p>'
+    + '<div class="tree-skeleton" aria-hidden="true"></div>'
+    + '<div class="tree-skeleton" aria-hidden="true"></div>'
+    + '</div>';
+}
+
+function offlineBlock(active) {
+  return '<div class="tree-status tree-offline" data-tree-status="offline"' + (active ? '' : ' hidden') + '>'
+    + '<p class="tree-status-title">连不上服务端</p>'
+    + '<p class="tree-status-sub">暂时读不到笔记名单，恢复联网后再试。</p>'
+    + '<button type="button" class="tree-retry" data-tree-retry>重试</button>'
+    + '</div>';
+}
+
+/**
+ * 完整树容器。加载 / 失败 / 树行三个容器自始至终常驻同一块 .tree，按 status
+ * 只切 hidden——冷启动、版本号变了全量重拉都不增删节点，不会有布局跳动。
+ * 加载用静态文字 + 两条固定高度浅色占位，不闪烁、不画空树；断网明说连不上
+ * 并给重试，不说「没有笔记」、不拿过期名单硬画。
+ */
+export function renderTreeHtml(model) {
+  const m = model || {};
+  const status = m.status === 'ready' || m.status === 'offline' ? m.status : 'loading';
+  const rows = Array.isArray(m.rows) ? m.rows : flattenVisible(m.tree || [], m);
+  const body = status === 'ready' ? rows.map(rowHtml).join('') : '';
+  return '<div class="tree">'
+    + loadingBlock(status === 'loading')
+    + offlineBlock(status === 'offline')
+    + '<div class="tree-rows"' + (status === 'ready' ? '' : ' hidden') + '>' + body + '</div>'
+    + '</div>';
+}

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   buildTree, sortEntries, refreshTree, getSelectedFolder, setSelectedFolder, selectPath,
   indentFor, ancestorsOf, isAncestor, reconcileState, loadTreeState, saveTreeState,
-  shouldAutoScroll, TREE_STATE_KEY,
+  shouldAutoScroll, TREE_STATE_KEY, flattenVisible, rowHtml, renderTreeHtml,
 } from './tree.js';
 
 test('契约：六个导出都是函数', () => {
@@ -264,4 +264,182 @@ test('shouldAutoScroll：就绪 + 有当前篇 + 用户没手动滚过才自动�
   assert.equal(shouldAutoScroll({ status: 'offline', currentPath: '一/二.md', userScrolled: false }), false);
   assert.equal(shouldAutoScroll({ status: 'ready', currentPath: '', userScrolled: false }), false, '没有打开的那篇不定位');
   assert.equal(shouldAutoScroll(null), false);
+});
+
+// ==========================================================================
+// #62 切片 C：摊平可见行 / 树行 HTML / 加载三态
+// 渲染是能从 DOM 抽出来的纯函数：字符串产物能在 node 里钉住结构与记号。
+// ==========================================================================
+
+test('flattenVisible：根行在第一行，只有显式选中根时才带 selected', () => {
+  const tree = buildTree(['日记/2026/a.md', 'c.md']);
+  const rows = flattenVisible(tree, { collapsed: new Set(), currentPath: '', selectedFolder: '', selectionMade: false });
+  assert.equal(rows[0].name, '根目录');
+  assert.equal(rows[0].path, '');
+  assert.equal(rows[0].depth, 0);
+  assert.equal(rows[0].expanded, true);
+  assert.equal(rows[0].noteCount, 2);
+  assert.equal(rows[0].selected, false, '没显式选中就不高亮');
+  const rows2 = flattenVisible(tree, { collapsed: new Set(), selectedFolder: '', selectionMade: true });
+  assert.equal(rows2[0].selected, true, '点过根行后根可选中');
+});
+
+test('flattenVisible：折叠的目录不铺开子树，展开的照直铺', () => {
+  const tree = buildTree(['日记/2026/a.md', '日记/b.md', '项目/c.md']);
+  const rows = flattenVisible(tree, { collapsed: new Set(['日记']), currentPath: '' });
+  const names = rows.map((r) => r.name);
+  assert.ok(names.includes('日记'));
+  assert.ok(names.includes('项目'));
+  assert.ok(!names.includes('2026'), '折上的目录子树不出现');
+  assert.ok(!names.includes('a'));
+  assert.ok(!names.includes('b'));
+});
+
+test('flattenVisible：打开的那篇压过手动折叠，那一支仍强制展开', () => {
+  const tree = buildTree(['日记/2026/a.md', '项目/c.md']);
+  const rows = flattenVisible(tree, {
+    collapsed: new Set(['日记', '日记/2026']),
+    currentPath: '日记/2026/a.md',
+  });
+  const names = rows.map((r) => r.name);
+  assert.ok(names.includes('2026'), '当前篇祖先折不上');
+  assert.ok(names.includes('a'));
+  assert.equal(rows.find((r) => r.current).path, '日记/2026/a.md');
+});
+
+test('flattenVisible：缩进 12/26/40/54 封顶，第 5 层起带折角记号', () => {
+  const tree = buildTree(['一/二/三/四/五/六.md', 'top.md']);
+  const rows = flattenVisible(tree, { collapsed: new Set(), currentPath: '' });
+  const byDepth = {};
+  for (const r of rows) if (!r.isRoot) byDepth[r.depth] = r;
+  assert.equal(byDepth[1].indentPx, 12);
+  assert.equal(byDepth[2].indentPx, 26);
+  assert.equal(byDepth[3].indentPx, 40);
+  assert.equal(byDepth[4].indentPx, 54);
+  assert.equal(byDepth[5].indentPx, 54, '第 5 层不再加缩进');
+  assert.equal(byDepth[5].corner, true, '第 5 层加折角记号');
+  assert.equal(byDepth[4].corner, false);
+});
+
+test('flattenVisible：197 篇大目录照直铺、不分段、不造假节点', () => {
+  const paths = Array.from({ length: 197 }, (_, i) => '大目录/第' + String(i).padStart(3, '0') + '篇.md');
+  const rows = flattenVisible(buildTree(paths), { collapsed: new Set(), currentPath: '' });
+  assert.equal(rows.length, 199, '根行 + 1 个目录 + 197 篇');
+  assert.equal(rows.filter((r) => r.type === 'note').length, 197);
+  assert.ok(rows.filter((r) => r.type === 'note').every((r) => !r.isRoot));
+});
+
+test('flattenVisible：选中文件夹与正在读那篇各带各的记号，互不覆盖', () => {
+  const tree = buildTree(['日记/a.md', 'b.md']);
+  const rows = flattenVisible(tree, {
+    collapsed: new Set(), currentPath: '日记/a.md',
+    selectedFolder: '日记', selectionMade: true,
+  });
+  assert.equal(rows.find((r) => r.path === '日记').selected, true);
+  assert.equal(rows.find((r) => r.path === '日记/a.md').current, true);
+});
+
+test('rowHtml：文件夹行是带 data-tree-dir 的按钮，笔记行是 #/edit 链接', () => {
+  const dirHtml = rowHtml({
+    type: 'dir', name: '日记', path: '日记', depth: 1, noteCount: 2,
+    indentPx: 12, corner: false, expanded: true, selected: false, current: false,
+  });
+  assert.match(dirHtml, /<button/);
+  assert.match(dirHtml, /data-tree-dir="日记"/);
+  assert.match(dirHtml, /style="padding-left:12px"/);
+  assert.match(dirHtml, /class="tree-count">2</);
+  assert.match(dirHtml, /class="tree-chevron"/);
+  assert.match(dirHtml, /width="12"/, '展开箭头 12px');
+  assert.match(dirHtml, /width="18"/, '文件夹图标 18px');
+  const noteHtml = rowHtml({
+    type: 'note', name: 'a', path: '日记/a.md', depth: 2, noteCount: 1,
+    indentPx: 26, corner: false, expanded: false, selected: false, current: true,
+  });
+  assert.match(noteHtml, /<a /);
+  assert.match(noteHtml, /href="#\/edit\//);
+  assert.match(noteHtml, /data-tree-current="1"/);
+  assert.match(noteHtml, /style="padding-left:26px"/);
+});
+
+test('rowHtml：第 5 层折角是独立 span、不是图标、不挂点击钩子', () => {
+  const html = rowHtml({
+    type: 'note', name: '深', path: '一/二/三/四/五.md', depth: 5,
+    indentPx: 54, corner: true, expanded: false, selected: false, current: false,
+  });
+  const m = html.match(/<span class="tree-corner"[^>]*><\/span>/);
+  assert.ok(m, '折角记号存在');
+  assert.doesNotMatch(m[0], /svg|data-tree-dir|href/);
+  assert.doesNotMatch(html, /tree-corner[^>]*data-tree-dir/);
+});
+
+test('rowHtml：名字转义、长名字整串保留不截断、计数不压名字', () => {
+  const long = '这是一篇非常长的名字'.repeat(10) + '&<"';
+  const html = rowHtml({
+    type: 'note', name: long, path: 'x.md', depth: 1,
+    indentPx: 12, corner: false, selected: false, current: false, expanded: false,
+  });
+  assert.ok(html.includes('&amp;&lt;&quot;'), '名字里的 HTML 元字符要转义');
+  assert.ok(html.includes('这是一篇非常长的名字'.repeat(10)), '长名字整串保留');
+  assert.ok(!html.includes('…'), '不做省略号截断');
+  assert.match(html, /class="tree-name">/);
+  assert.doesNotMatch(html, /class="tree-name"[^>]*>\d+<\/span>/, '计数不塞进名字里');
+});
+
+test('rowHtml：树行不挂常驻 ⋯；选中与当前两个记号可同时落一行', () => {
+  const both = rowHtml({
+    type: 'dir', name: '日记', path: '日记', depth: 1, indentPx: 12,
+    corner: false, expanded: true, selected: true, current: true,
+  });
+  assert.match(both, /is-selected/);
+  assert.match(both, /is-current/, '两种记号同时在一行');
+  const plain = rowHtml({
+    type: 'dir', name: '日记', path: '日记', depth: 1, indentPx: 12,
+    corner: false, expanded: true, selected: false, current: false,
+  });
+  assert.ok(!plain.includes('⋯'), '不挂常驻 ⋯');
+  assert.ok(!/data-tree-more|data-act="more"/.test(plain));
+});
+
+test('renderTreeHtml：加载态说清在等什么、两条静态占位、不画空树不说没有笔记', () => {
+  const html = renderTreeHtml({ status: 'loading', tree: buildTree(['a.md']) });
+  assert.match(html, /正在读取笔记名单/);
+  assert.equal((html.match(/class="tree-skeleton"/g) || []).length, 2, '两条固定高度占位');
+  assert.ok(!html.includes('没有笔记'), '不许说成没有笔记');
+  assert.match(html, /data-tree-status="loading"(?![^>]*hidden)/, '加载块可见');
+  assert.match(html, /<div class="tree-rows"[^>]* hidden><\/div>/, '树行容器收起且不画一行');
+  assert.doesNotMatch(html, /<(button|a)[^>]*tree-row/, '加载态不画任何树行');
+  assert.ok(!html.includes('shimmer'), '不用闪烁动画');
+});
+
+test('renderTreeHtml：断网明说连不上 + 重试，不说没有笔记、不画空树、不用过期名单', () => {
+  const html = renderTreeHtml({ status: 'offline', tree: buildTree(['a.md']) });
+  assert.match(html, /连不上/);
+  assert.match(html, /data-tree-retry/);
+  assert.ok(!html.includes('没有笔记'));
+  assert.match(html, /data-tree-status="offline"(?![^>]*hidden)/, '断网块可见');
+  assert.match(html, /<div class="tree-rows"[^>]* hidden><\/div>/, '不画树行、不拿过期名单硬画');
+  assert.doesNotMatch(html, /<(button|a)[^>]*tree-row/);
+});
+
+test('renderTreeHtml：就绪态画树行、两个状态块都收起', () => {
+  const html = renderTreeHtml({
+    status: 'ready', tree: buildTree(['日记/a.md', 'c.md']), collapsed: new Set(),
+    currentPath: '日记/a.md', selectedFolder: '日记', selectionMade: true,
+  });
+  assert.match(html, /class="tree-row/);
+  assert.match(html, /data-tree-dir="日记"/);
+  assert.match(html, /data-tree-current="1"/);
+  assert.match(html, /data-tree-status="loading"[^>]*hidden/);
+  assert.match(html, /data-tree-status="offline"[^>]*hidden/);
+  assert.match(html, /<div class="tree-rows">/, '就绪态树行容器可见');
+});
+
+test('renderTreeHtml：加载↔就绪切换时三个容器始终常驻，不增删节点不闪', () => {
+  const loading = renderTreeHtml({ status: 'loading', tree: [] });
+  const ready = renderTreeHtml({ status: 'ready', tree: buildTree(['a.md']) });
+  const blocks = (h) => (h.match(/data-tree-status="|class="tree-rows"/g) || []);
+  assert.equal(blocks(loading).length, 3);
+  assert.equal(blocks(ready).length, 3, '两态容器数量一致，只切 hidden');
+  assert.match(loading, /<div class="tree">/);
+  assert.match(ready, /<div class="tree">/);
 });
