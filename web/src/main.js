@@ -38,7 +38,7 @@ import './style.css';
 // 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
 // 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
 import { initLayout } from './layout.js';
-import { getSelectedFolder } from './tree.js';
+import { getSelectedFolder, initTree, selectPath, notifySidebarShown } from './tree.js';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
@@ -1520,3 +1520,41 @@ function dropBodyStore() {
   try { localStorage.removeItem('searchPrefs.v1'); } catch (e) { /* 忽略 */ }
 }
 dropBodyStore();
+
+/* ---------- #62 目录树接线（只加 import 与这一处，不重排 / 不改别人函数） ----------
+   树只从本机那份全库名单（wikilinkIndex.notePaths）画，零新增取数请求。
+   加载三态跟 ensureIndex 的同一份 promise 走；写后就地刷新由 #66 调 refreshTree()。 */
+const treeCtl = initTree({
+  getNotePaths: () => (wikilinkIndex ? wikilinkIndex.notePaths : null),
+  reloadIndex: () => ensureIndex({ force: true }),
+  getCurrentNote: () => (state.view === 'editor' ? state.path : ''),
+});
+
+// 冷启动 T-1/T-2、版本号变了全量重拉、断网 T-3：都挂在 ensureIndex 的那份
+// promise 上。底部已预热过，同一份 promise 直接复用，不重复发请求。
+function watchTreeIndex(p) {
+  Promise.resolve(p).then(() => treeCtl.onReady(), () => treeCtl.onOffline());
+}
+watchTreeIndex(ensureIndex());
+
+// 打开一篇 → 树里按「打开的那篇」定位（祖先展开 / 高亮 / 选中退回所在文件夹）。
+window.addEventListener('hashchange', () => {
+  const h = location.hash.slice(1);
+  if (h.startsWith('/edit/')) selectPath(decodeURIComponent(h.slice(6)));
+});
+// 冷启动直接落在某篇（分享链接）：那次不经过 hashchange，补一次定位。
+if (location.hash.startsWith('#/edit/')) selectPath(decodeURIComponent(location.hash.slice(7)));
+
+// 侧栏每次出现（手机点开 / 宽屏常驻首帧）：一次新的拉开，重置滚动保护并定位。
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('[data-shell="open"]')) notifySidebarShown();
+});
+notifySidebarShown();
+
+// 切回前台：recheckRepo() 自己比对 head 并在变化时 ensureIndex({force:true})，
+// 这里不重做那套判断，只把结果接回树；notifySidebarShown 会在下一次拉开时
+// 用最新名单重画（不改 recheckRepo 内部）。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') watchTreeIndex(ensureIndex());
+});

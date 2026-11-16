@@ -704,3 +704,68 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
    自己的样式段落（用「井号 + 票号」的注释开头），只追加、不要修改本文件
    已有的规则，避免并行合并冲突。
    ============================================================ */
+
+/* ==========================================================================
+   #62 目录树（只追加，不改上面已有规则）
+   ========================================================================== */
+
+/* 加载 / 断网 / 树行三块常驻同一个 .tree，只切 hidden，切换不产生布局跳动 */
+.tree { min-height: 100%; }
+.tree-status { padding: var(--space-4) var(--space-3); }
+.tree-status-title { margin: 0 0 var(--space-1); font-size: 15px; font-weight: 500; color: var(--color-text); }
+.tree-status-sub { margin: 0 0 var(--space-4); font-size: 13px; color: var(--color-text-secondary); }
+/* 两条固定高度的浅色占位：静态、不加 shimmer / 闪烁动画 */
+.tree-skeleton { height: 44px; margin-bottom: var(--space-2); border-radius: var(--radius-sm); background: var(--color-hover); }
+.tree-offline .tree-status-title { color: var(--color-warning); }
+.tree-retry {
+  min-height: 44px; padding: var(--space-2) var(--space-4);
+  font-family: inherit; font-size: 15px; font-weight: 500;
+  color: var(--color-text); background: var(--color-surface);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); cursor: pointer;
+}
+.tree-retry:active { background: var(--color-pressed); }
+
+/* 树行：44px 由行高保证，不靠缩进；行尾固定留 12px 空白。
+   padding-left 由每行的 inline style 给（12/26/40/54），这里不设，免得盖掉。 */
+.tree-rows { padding: var(--space-1) 0; }
+.tree-row {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; min-height: 44px; box-sizing: border-box;
+  padding-top: var(--space-1); padding-bottom: var(--space-1);
+  padding-right: var(--space-3);
+  border: none; border-radius: 0;
+  background: transparent; color: var(--color-text);
+  font-family: inherit; font-size: 14px; line-height: 1.5;
+  text-align: left; text-decoration: none; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  /* 展开 / 收起直接切换：不给 height / max-height 加动画 */
+}
+.tree-row:hover { background: var(--color-hover); }
+.tree-row:active { background: var(--color-pressed); }
+.tree-row:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+
+/* 选中的文件夹：左侧 2px 内嵌竖线（box-shadow，不占缩进、不与当前底色抢同一属性） */
+.tree-row.is-selected { background: var(--color-selected); box-shadow: inset 2px 0 0 var(--color-accent); }
+/* 正在读的那篇：浅底 + 强调色字 + 600，不用左侧竖线 */
+.tree-row.is-current { background: var(--color-current); color: var(--color-accent); font-weight: 600; }
+/* 两个记号落同一行：当前底色与字 + 选中竖线都在 */
+.tree-row.is-selected.is-current { background: var(--color-current); }
+
+.tree-row.is-dir .tree-name { font-weight: 600; }
+.tree-chevron { flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); }
+.tree-ic { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-secondary); }
+.tree-row.is-selected .tree-ic, .tree-row.is-current .tree-ic { color: inherit; }
+
+/* 长名字单独横向滚动、不截断；隐藏滚动条但保留横滑手势 */
+.tree-name { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none; }
+.tree-name::-webkit-scrollbar { display: none; }
+/* 计数固定不缩，名字区自己吃掉剩余宽度：计数不压名字 */
+.tree-count { flex: none; font-size: 12px; color: var(--color-text-secondary); }
+
+/* 第 5 层起行首的 6×6 折角层级记号：左边 + 下边各 1px，不是图标、不响应点击 */
+.tree-corner {
+  flex: none; width: 6px; height: 6px; margin-right: var(--space-1);
+  border-left: 1px solid var(--color-text-faint);
+  border-bottom: 1px solid var(--color-text-faint);
+  pointer-events: none;
+}

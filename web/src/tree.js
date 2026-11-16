@@ -420,7 +420,9 @@ export function createTreeController(deps) {
   function syncPaths() {
     // 数据源只有本机那份全库名单（wikilinkIndex.notePaths），零新增取数请求。
     const paths = getNotePaths();
-    model.notePaths = Array.isArray(paths) ? paths : [];
+    const next = Array.isArray(paths) ? paths : [];
+    if (next === model.notePaths) return; // 同一份名单引用：不重算、不丢状态
+    model.notePaths = next;
     model.tree = buildTree(model.notePaths);
     const r = reconcileState(model, model.tree);
     model.collapsed = r.collapsed;
@@ -491,6 +493,9 @@ export function createTreeController(deps) {
   }
   function notifySidebarShown() {
     // 侧栏每次出现：一次新的拉开，重置手动滚动保护，按打开的那篇摆好。
+    // 顺带从本机名单重读一次（零新增请求）：切回前台 recheckRepo() 的
+    // ensureIndex({force:true}) 换了名单后，下一次拉开树就是新世界。
+    syncPaths();
     model.userScrolled = false;
     if (!model.currentPath) {
       const p = getCurrentNote();

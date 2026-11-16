@@ -663,3 +663,24 @@ test('initTree 模块级转发：导出名指向真实现（选中落本机记�
   assert.doesNotThrow(() => selectPath('a.md'));
   assert.doesNotThrow(() => notifySidebarShown());
 });
+
+test('notifySidebarShown：侧栏出现时用最新全库名单重画（配合 recheckRepo 重建）', () => {
+  let paths = ['旧/a.md'];
+  const { ctl, doc } = makeCtl({ getNotePaths: () => paths });
+  ctl.onReady();
+  paths = ['新/b.md']; // 模拟切回前台 head 变了、ensureIndex({force:true}) 换了名单
+  ctl.notifySidebarShown();
+  const html = doc._nodes['tree-view'].innerHTML;
+  assert.match(html, /新/);
+  assert.doesNotMatch(html, /旧/);
+});
+
+test('syncPaths 幂等：名单没换时不重算、状态不丢', () => {
+  const paths = ['日记/a.md'];
+  const { ctl } = makeCtl({ getNotePaths: () => paths });
+  ctl.onReady();
+  const treeRef = ctl.model.tree;
+  ctl.onReady();
+  assert.equal(ctl.model.tree, treeRef, '同一份名单不重建树');
+  assert.equal(ctl.model.status, 'ready');
+});
