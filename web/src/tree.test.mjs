@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 
 import {
   buildTree, sortEntries, refreshTree, getSelectedFolder, setSelectedFolder, selectPath,
+  indentFor, ancestorsOf, isAncestor, reconcileState, loadTreeState, saveTreeState,
+  shouldAutoScroll, TREE_STATE_KEY,
 } from './tree.js';
 
 test('契约：六个导出都是函数', () => {
@@ -125,4 +127,141 @@ test('buildTree：空/非法输入返回空树，跳过非法条目、不改入�
   const tree = buildTree(paths);
   assert.deepEqual(tree.map((n) => n.name), ['a']);
   assert.deepEqual(paths, snapshot, '不改入参');
+});
+
+// ==========================================================================
+// #62 切片 B：缩进 / 祖先 / 折叠对账 / 本机持久化 / 自动滚动判定
+// 无状态纯函数与只碰注入 storage 的边界函数，可在 node --test 里钉住。
+// ==========================================================================
+
+function mockStorage(initial = {}) {
+  const m = new Map(Object.entries(initial));
+  return {
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => m.set(k, String(v)),
+    removeItem: (k) => m.delete(k),
+    _map: m,
+  };
+}
+
+test('indentFor：1~4 层 12/26/40/54，第 5 层起固定 54 并加折角记号', () => {
+  assert.deepEqual(indentFor(1), { px: 12, corner: false });
+  assert.deepEqual(indentFor(2), { px: 26, corner: false });
+  assert.deepEqual(indentFor(3), { px: 40, corner: false });
+  assert.deepEqual(indentFor(4), { px: 54, corner: false });
+  for (const d of [5, 6, 9]) {
+    assert.deepEqual(indentFor(d), { px: 54, corner: true }, `第 ${d} 层封顶 + 折角`);
+  }
+});
+
+test('indentFor：非法/缺失 depth 落到第 1 层，不抛', () => {
+  assert.deepEqual(indentFor(0), { px: 12, corner: false });
+  assert.deepEqual(indentFor(-3), { px: 12, corner: false });
+  assert.deepEqual(indentFor(undefined), { px: 12, corner: false });
+  assert.deepEqual(indentFor('x'), { px: 12, corner: false });
+  assert.deepEqual(indentFor(null), { px: 12, corner: false });
+});
+
+test('ancestorsOf：返回笔记路径的各级祖先目录（不含文件、不含根）', () => {
+  assert.deepEqual(ancestorsOf('一/二/三/四.md'), ['一', '一/二', '一/二/三']);
+  assert.deepEqual(ancestorsOf('日记/2026/a.md'), ['日记', '日记/2026']);
+  assert.deepEqual(ancestorsOf('c.md'), []);
+});
+
+test('ancestorsOf：空/非法输入返回空数组', () => {
+  assert.deepEqual(ancestorsOf(''), []);
+  assert.deepEqual(ancestorsOf(null), []);
+  assert.deepEqual(ancestorsOf(123), []);
+  assert.deepEqual(ancestorsOf('/'), []);
+});
+
+test('isAncestor：目录是笔记的上级才成立，根与同名前缀不算', () => {
+  assert.equal(isAncestor('一/二', '一/二/三/四.md'), true);
+  assert.equal(isAncestor('一', '一/二/三.md'), true);
+  assert.equal(isAncestor('一', '一二/三.md'), false, '不能拿字符串前缀当目录');
+  assert.equal(isAncestor('', '一/二.md'), false, '根行不参与折叠判定');
+  assert.equal(isAncestor('三', '一/二/三.md'), false, '只认从根起的整段前缀');
+});
+
+test('reconcileState：找不到的折叠路径静默丢弃、选中文件夹找不到也静默归零', () => {
+  const tree = buildTree(['日记/2026/a.md', '项目/b.md', 'c.md']);
+  const state = {
+    collapsed: new Set(['日记', '日记/2026', '被改名的目录', '已删除']),
+    selectedFolder: '被改名的目录',
+    selectionMade: true,
+  };
+  const r = reconcileState(state, tree);
+  assert.deepEqual([...r.collapsed].sort(), ['日记', '日记/2026']);
+  assert.equal(r.selectedFolder, '');
+  assert.equal(r.selectionMade, false);
+  assert.equal(r.changed, true);
+  assert.equal(state.collapsed.size, 4, '不改入参');
+});
+
+test('reconcileState：路径都在时原样保留 changed=false；根选中是合法值不被清理', () => {
+  const tree = buildTree(['日记/2026/a.md', '项目/b.md']);
+  const r1 = reconcileState({ collapsed: new Set(['日记', '项目']), selectedFolder: '项目', selectionMade: true }, tree);
+  assert.deepEqual([...r1.collapsed].sort(), ['日记', '项目']);
+  assert.equal(r1.selectedFolder, '项目');
+  assert.equal(r1.changed, false);
+  const r2 = reconcileState({ collapsed: new Set(['日记']), selectedFolder: '', selectionMade: true }, tree);
+  assert.equal(r2.selectedFolder, '', '选中根＝落点仓库根，不能被当成找不到');
+  assert.equal(r2.selectionMade, true);
+  assert.equal(r2.changed, false);
+});
+
+test('loadTreeState：空/坏值/非法 JSON/无 storage 都安全回落到默认', () => {
+  const empty = loadTreeState(mockStorage());
+  assert.deepEqual([...empty.collapsed], []);
+  assert.equal(empty.selectedFolder, '');
+  assert.equal(empty.selectionMade, false);
+  assert.deepEqual([...loadTreeState(mockStorage({ [TREE_STATE_KEY]: '{坏 json' })).collapsed], []);
+  assert.deepEqual([...loadTreeState(mockStorage({ [TREE_STATE_KEY]: 'null' })).collapsed], []);
+  assert.equal(loadTreeState(null).selectedFolder, '');
+  const broken = { getItem() { throw new Error('blocked'); } };
+  assert.equal(loadTreeState(broken).selectionMade, false);
+});
+
+test('loadTreeState：坏类型字段被过滤，只收字符串折叠路径', () => {
+  const raw = JSON.stringify({ collapsed: ['日记', 123, null, '', '项目'], selectedFolder: '日记', selectionMade: true });
+  const s = loadTreeState(mockStorage({ [TREE_STATE_KEY]: raw }));
+  assert.deepEqual([...s.collapsed], ['日记', '项目']);
+  assert.equal(s.selectedFolder, '日记');
+  assert.equal(s.selectionMade, true);
+});
+
+test('saveTreeState：写独立键、只存可序列化字段；storage 抛异常静默不炸', () => {
+  const s = mockStorage();
+  const state = { collapsed: new Set(['日记', '项目']), selectedFolder: '日记', selectionMade: true };
+  assert.equal(saveTreeState(s, state), true);
+  const wrote = JSON.parse(s._map.get(TREE_STATE_KEY));
+  assert.deepEqual(wrote.collapsed, ['日记', '项目']);
+  assert.equal(wrote.selectedFolder, '日记');
+  assert.equal(wrote.selectionMade, true);
+  assert.equal(saveTreeState(null, state), false);
+  const broken = { setItem() { throw new Error('quota'); } };
+  assert.equal(saveTreeState(broken, state), false);
+});
+
+test('折叠状态单独存、不随仓库版本号失效：save 后改缓存头，load 仍拿得到', () => {
+  const s = mockStorage();
+  saveTreeState(s, { collapsed: new Set(['日记']), selectedFolder: '日记', selectionMade: true });
+  // 模拟仓库版本号变化 / 那份缓存被清空，都碰不到折叠记录
+  s.setItem('fileIndexCache.v2', JSON.stringify({ head: 'new-head-after-commit' }));
+  s.setItem('fileIndexCache.v2', '{}');
+  assert.notEqual(TREE_STATE_KEY, 'fileIndexCache.v2');
+  assert.ok(!TREE_STATE_KEY.includes('head'), '折叠记录的键不能带版本号');
+  const back = loadTreeState(s);
+  assert.deepEqual([...back.collapsed], ['日记']);
+  assert.equal(back.selectedFolder, '日记');
+  assert.equal(back.selectionMade, true);
+});
+
+test('shouldAutoScroll：就绪 + 有当前篇 + 用户没手动滚过才自动定位', () => {
+  assert.equal(shouldAutoScroll({ status: 'ready', currentPath: '一/二.md', userScrolled: false }), true);
+  assert.equal(shouldAutoScroll({ status: 'ready', currentPath: '一/二.md', userScrolled: true }), false, '手动滚过不抢回');
+  assert.equal(shouldAutoScroll({ status: 'loading', currentPath: '一/二.md', userScrolled: false }), false);
+  assert.equal(shouldAutoScroll({ status: 'offline', currentPath: '一/二.md', userScrolled: false }), false);
+  assert.equal(shouldAutoScroll({ status: 'ready', currentPath: '', userScrolled: false }), false, '没有打开的那篇不定位');
+  assert.equal(shouldAutoScroll(null), false);
 });
