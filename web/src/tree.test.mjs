@@ -36,3 +36,93 @@ test('占位可运行：refreshTree / selectPath 不抛', () => {
   assert.doesNotThrow(() => refreshTree());
   assert.doesNotThrow(() => selectPath('a/b.md'));
 });
+
+// ==========================================================================
+// #62 切片 A：排序（文件夹在前 + 拼音序）与从全库名单推嵌套树
+// 数据源是 wikilinkIndex.notePaths，零新增取数请求；只画能到达笔记的路径。
+// ==========================================================================
+
+test('sortEntries：文件夹在前、名字拼音序，返回新数组且不改入参', () => {
+  const input = [
+    { name: '张三', type: 'note' },
+    { name: '安妮', type: 'dir' },
+    { name: '李四', type: 'note' },
+    { name: '概览', type: 'dir' },
+  ];
+  const snapshot = input.map((e) => ({ ...e }));
+  const out = sortEntries(input);
+  assert.deepEqual(out.map((e) => e.name), ['安妮', '概览', '李四', '张三']);
+  assert.notEqual(out, input, '返回新数组');
+  assert.deepEqual(input, snapshot, '不改入参');
+});
+
+test('sortEntries：中文按拼音序而非字符编码序（不沿用接口原序）', () => {
+  // 字符编码序是 张三(U+5F20) < 李四(U+674E)：张三,李四
+  // 拼音序是 li < zhang：李四,张三
+  const out = sortEntries([
+    { name: '张三', type: 'note' }, { name: '李四', type: 'note' },
+  ]);
+  assert.deepEqual(out.map((e) => e.name), ['李四', '张三']);
+});
+
+test('sortEntries：非数组当空数组，元素缺字段不抛', () => {
+  assert.deepEqual(sortEntries(null), []);
+  assert.deepEqual(sortEntries(undefined), []);
+  assert.deepEqual(sortEntries('nope'), []);
+});
+
+test('buildTree：文件夹在前 + 拼音序，noteCount 是子树笔记总数', () => {
+  const tree = buildTree(['日记/2026/a.md', '日记/b.md', 'c.md']);
+  assert.deepEqual(tree.map((n) => n.name), ['日记', 'c']);
+  const dir = tree[0];
+  assert.equal(dir.type, 'dir');
+  assert.equal(dir.path, '日记');
+  assert.equal(dir.depth, 1);
+  assert.equal(dir.noteCount, 2);
+  assert.deepEqual(dir.children.map((n) => n.name), ['2026', 'b']);
+  assert.equal(dir.children[0].noteCount, 1);
+  assert.equal(tree[1].type, 'note');
+  assert.equal(tree[1].path, 'c.md'); // path 保留完整路径
+  assert.equal(tree[1].name, 'c');    // 显示名去掉 .md，与搜索结果一致
+});
+
+test('buildTree：配置/附件/脚本目录（无 .md 笔记）自动消失，不用黑名单', () => {
+  const tree = buildTree([
+    '脚本/deploy.sh', '附件/logo.png', '配置/settings.json', '笔记/正文.md',
+  ]);
+  assert.deepEqual(tree.map((n) => n.name), ['笔记']);
+  assert.deepEqual(tree[0].children.map((n) => n.name), ['正文']);
+});
+
+test('buildTree：197 篇大目录照直铺、不分段、不造假节点', () => {
+  const paths = Array.from({ length: 197 }, (_, i) =>
+    '大目录/第' + String(i).padStart(3, '0') + '篇.md');
+  const tree = buildTree(paths);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].noteCount, 197);
+  assert.equal(tree[0].children.length, 197);
+  assert.ok(tree[0].children.every((n) => n.type === 'note'), '不掺分组标题/假节点');
+});
+
+test('buildTree：四层路径都画得出来，depth 递增、noteCount 正确', () => {
+  const tree = buildTree(['一/二/三/四/深.md', '一/二/浅.md']);
+  const d1 = tree[0];
+  const d2 = d1.children.find((n) => n.type === 'dir');
+  const d3 = d2.children.find((n) => n.type === 'dir');
+  assert.equal(d1.depth, 1); assert.equal(d1.noteCount, 2);
+  assert.equal(d2.depth, 2); assert.equal(d2.noteCount, 2);
+  assert.equal(d3.depth, 3); assert.equal(d3.noteCount, 1);
+  assert.equal(d3.children.find((n) => n.type === 'dir').depth, 4);
+  assert.equal(d2.children.find((n) => n.type === 'note').name, '浅');
+});
+
+test('buildTree：空/非法输入返回空树，跳过非法条目、不改入参', () => {
+  assert.deepEqual(buildTree([]), []);
+  assert.deepEqual(buildTree(null), []);
+  assert.deepEqual(buildTree(undefined), []);
+  const paths = ['a.md', 123, null, '', '/'];
+  const snapshot = paths.slice();
+  const tree = buildTree(paths);
+  assert.deepEqual(tree.map((n) => n.name), ['a']);
+  assert.deepEqual(paths, snapshot, '不改入参');
+});

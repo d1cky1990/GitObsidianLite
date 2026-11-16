@@ -1,19 +1,79 @@
-// 折叠目录树（占位，#61 建接口 / #62 填充实现）。
+// 折叠目录树（#62 实现；#61 建接口占位）。
 //
-// 后面五张票会照着这里的导出名 import，所以**导出名不要改**。目前全部返回
-// 可运行的默认值，真正的「从全库名单推嵌套树、三态加载、折叠记忆、定位、
-// 只画可达路径、树就地刷新」由 #62 在文件内部替换实现，接口保持不变。
+// 后面五张票会照着这里的导出名 import，所以**导出名不要改**：
+//   buildTree / sortEntries / refreshTree / getSelectedFolder /
+//   setSelectedFolder / selectPath
+// 数据源是本机那份全库名单（wikilinkIndex.notePaths），零新增取数请求。
+// 建树 / 排序 / 缩进 / 摊平可见行 / 折叠 / 定位 / 三态 / HTML 渲染都抽成可单测的
+// 纯函数；DOM 接线层注入假依赖，node 无 document 时安全退化为 no-op。
+
+import { icon } from './icons.js';
 
 let selectedFolder = '';
 
-/** 由 #62 提供：paths（全库名单）→ 嵌套树节点数组。占位返回空数组。 */
-export function buildTree(_paths) {
-  return [];
+const MD_EXT = /\.md$/i;
+
+/** 显示名：笔记去掉 .md（与 search.js baseName 一致），文件夹用目录段名。 */
+function displayName(segment, isNote) {
+  return isNote ? segment.replace(MD_EXT, '') : segment;
 }
 
-/** 由 #62 提供：文件夹在前 + 拼音序。占位返回浅拷贝，保证是数组、不改入参。 */
+/** 文件夹在前 + 名字拼音序（localeCompare，沿用目录页做法，不引拼音表）。 */
 export function sortEntries(entries) {
-  return Array.isArray(entries) ? entries.slice() : [];
+  if (!Array.isArray(entries)) return [];
+  return entries.slice().sort((a, b) => {
+    const aDir = a && a.type === 'dir' ? 0 : 1;
+    const bDir = b && b.type === 'dir' ? 0 : 1;
+    if (aDir !== bDir) return aDir - bDir;
+    const an = a && a.name != null ? String(a.name) : '';
+    const bn = b && b.name != null ? String(b.name) : '';
+    return an.localeCompare(bn);
+  });
+}
+
+/**
+ * 从全库名单（notePaths）推嵌套树。零新增取数请求。
+ * 只收 .md 笔记路径——配置 / 附件 / 脚本目录里没有笔记，因此自动消失，不用黑名单；
+ * 由笔记路径反推出来的文件夹必然「子树里至少有一篇笔记」，真空文件夹根本不会出现，
+ * 不为它改数据层。每层 children 用 sortEntries（文件夹在前 + 拼音序）。
+ * 返回顶层节点数组（不含虚拟根行；根行由渲染层单独画，选中根＝落点仓库根）。
+ * 节点：{ type:'dir'|'note', name, path, depth, noteCount, children }
+ */
+export function buildTree(paths) {
+  const rootChildren = [];
+  if (!Array.isArray(paths)) return rootChildren;
+  for (const p of paths) {
+    if (typeof p !== 'string' || !p || !MD_EXT.test(p)) continue;
+    const segs = p.split('/').filter(Boolean);
+    if (!segs.length) continue;
+    let level = rootChildren;
+    let prefix = '';
+    for (let i = 0; i < segs.length; i++) {
+      const isNote = i === segs.length - 1;
+      const seg = segs[i];
+      prefix = prefix ? prefix + '/' + seg : seg;
+      let node = level.find((n) => n.path === prefix);
+      if (!node) {
+        node = {
+          type: isNote ? 'note' : 'dir',
+          name: displayName(seg, isNote),
+          path: prefix,
+          depth: i + 1,
+          noteCount: 0,
+          children: [],
+        };
+        level.push(node);
+      }
+      node.noteCount += 1; // 沿途每个节点都「到达」这一篇，故文件夹得到子树笔记总数
+      level = node.children;
+    }
+  }
+  function sortTree(nodes) {
+    const sorted = sortEntries(nodes);
+    for (const n of sorted) if (n.children.length) n.children = sortTree(n.children);
+    return sorted;
+  }
+  return sortTree(rootChildren);
 }
 
 /** 由 #62 提供：写完文件后树就地刷新（#66 会调）。占位 no-op。 */
