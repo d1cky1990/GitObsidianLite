@@ -48,6 +48,15 @@ import {
 import {
   emptyStateHtml, readingStateHtml, classifyReadError, GONE_MESSAGE, REMOVE_LABEL,
 } from './render-states.js';
+// #65 编辑态与冲突：锁死侧栏 / 未保存保护 / 进编辑读远端 / 保存失败分类 /
+// 提示条时长 / 冲突链条，规则都在 editor-guard.js；可见视口接线在 viewport.js。
+// main.js 只做 import 与末尾一处接线，不重排、不改别人函数里的代码。
+import {
+  isLocked, guardExitEdit, configureEditorGuard, hasUnsavedChanges,
+  classifyEditRead, classifySaveError, toastDuration,
+  EDIT_COPY, SAVE_COPY,
+} from './editor-guard.js';
+import { initViewport } from './viewport.js';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
@@ -533,8 +542,9 @@ const state = {
   undo: null, // { path, content, dir } —— 撤销删除要用的原稿
   openInEdit: null, // 新建之后要直接进编辑态的那条路径
 
-  // ---- 进编辑态之前那次远端核对（#34） ----
+  // ---- 进编辑态之前那次远端核对（#34 / #65） ----
   editChecking: false, // 正在读最新版，按钮显示忙态；也当连点锁
+  editReadError: '', // #65 读不到远端时停在阅读态的那句说明（空 = 正常）
 
   // ---- 搜索（#33） ----
   query: '', // 搜索框里的词（空 = 正常翻目录）
@@ -563,7 +573,7 @@ function toast(msg, action = null) {
   toastTimer = setTimeout(() => {
     if (state.message !== msg) return; // 期间又被别的提示顶掉了，别把新的收走
     state.message = ''; state.toastAction = null; render();
-  }, action ? 8000 : 2500);
+  }, toastDuration(action)); // #65：普通 2.5s / 带动作 8s，与 editor-guard 单测同源
 }
 
 function navigate() {
@@ -649,37 +659,44 @@ function backToRead() {
   pendingChecks.replay();
 }
 
+/**
+ * 保存（#65）：忙态落在被按的那个按钮上，不用全局提示代劳；保存期间不整页重画，
+ * 也就不会换掉用户正在打字的那个输入框节点。撞远端改动才进冲突态且草稿不丢；
+ * 连不上 / 这篇不在了 / 其它各说各的，**绝不许说成冲突**。分类在 classifySaveError。
+ */
 async function save() {
-  state.busy = true; render();
+  const btn = document.getElementById('save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+  state.busy = true;
   try {
     const r = await writeFile(state.file.path, state.draft, state.file.sha, commitMessage.edit(state.file.path));
     state.file.sha = r.sha; state.file.content = state.draft;
     backToRead();
-    toast('已保存');
+    toast(SAVE_COPY.saved);
   } catch (e) {
-    if (e.conflict && e.remote) enterConflict(e.remote);
-    else toast(e.conflict ? '保存冲突：远端已被改动' : e.message);
+    const verdict = classifySaveError(e);
+    if (verdict.kind === 'conflict') { enterConflict(verdict.remote); render(); }
+    else if (verdict.kind !== 'auth') toast(verdict.message); // 要密码时解锁框已在说话
+  } finally {
+    state.busy = false;
+    // 仍停在编辑态时恢复按钮；切到阅读 / 冲突态的那次 render 已重建动作区，取不到就跳过
+    const b = document.getElementById('save-btn');
+    if (b) { b.disabled = false; b.textContent = '保存'; }
   }
-  state.busy = false; render();
 }
 
 /**
- * 点「编辑」：进编辑态之前先核一次远端（#34，票 04 定过、实现时漏了）。
+ * 点「编辑」：进编辑态之前先核一次远端（#34 / #65）。
  *
- * 为什么要在这一步核：打开一篇时拿到的正文与版本号是**那一刻**的。手机端「低频查看、
- * 隔一会儿才编辑」是常态——中间 PC 改了仓库，用户对着旧正文改十分钟，直到点保存才在
- * 冲突界面发现。后端 409 兜得住数据，但那十分钟白干了。
- *
- * 为什么不给「仍编辑旧版」：这一刻用户还没落笔，换成最新的**不会覆盖任何人的输入**——
- * 这是整个方案能成立的前提。别把这段挪到「已经打过字之后」。
- *
- * 核不动**不挡人**：读失败照常进编辑态、正文与版本号保持手上那份。保存那一步的 409
- * 本来就兜得住，锁住编辑只是把用户关在门外。
+ * 手机上不留正文副本，连不上时写下的字在保存那一刻必然丢——所以**读不到就不进编辑**
+ * （作废旧规矩「读取失败照常进编辑态」）。忙态落在被按的那个按钮上、连点只发一次
+ * 请求。版本号没变直接进、一个字不提示；变了换最新再进并提示那句；读不到停在阅读态，
+ * 明说连不上 / 不在了，动作区给「重试」。结果分类在 editor-guard.js 的 classifyEditRead。
  */
 async function startEdit() {
   if (state.editChecking) return;              // 连点别发两次请求
   const path = state.path, sha = state.file.sha;
-  state.editChecking = true; render();
+  state.editChecking = true; state.editReadError = ''; render();
 
   let fresh = null, err = null;
   try { fresh = await readFile(path); } catch (e) { err = e; }
@@ -689,21 +706,19 @@ async function startEdit() {
   // （丢了也要把忙态清掉，否则回到阅读态时按钮永远停在「读取中…」）
   if (state.view !== 'editor' || state.path !== path || state.mode !== 'read') { render(); return; }
 
-  if (err) {
-    state.mode = 'edit'; render();
-    // 要密码时弹窗已经在说话了，别在它背后再喊一句「没连上」
-    if (err.auth) return;
-    toast(err.notFound
-      ? '这篇在远端已经不在了，先按手上这份改；保存时会再核一次'
-      : '没连上，先按手上这份改；保存时再核一次');
+  const verdict = classifyEditRead({ err, fresh, currentSha: sha });
+  if (!verdict.enterEdit) {
+    // 停在阅读态：落位一句说明 + 动作区「重试」，不用会 2.5 秒消失的全局提示代劳。
+    // 要密码时 api.js 已派发 need-password 弹解锁框，背后不再喊一句（message 为空）。
+    state.editReadError = verdict.message;
+    render();
     return;
   }
 
   // 版本号必须**同步换掉**：不换的话下一次保存必然 409，把一条本来不存在的冲突报给用户
-  const changed = fresh.sha !== sha;
-  if (changed) { state.file = fresh; state.draft = fresh.content; }
+  if (verdict.kind === 'updated') { state.file = verdict.fresh; state.draft = verdict.fresh.content; }
   state.mode = 'edit'; render();
-  if (changed) toast('远端已更新，已自动加载最新内容');
+  if (verdict.message) toast(verdict.message);
 }
 
 function enterConflict(remote) {
@@ -722,14 +737,14 @@ function decide(fragId, decision) {
 }
 
 async function commitMerge() {
-  if (!isAllResolved(state.conflict)) { toast('还有差异未处理'); return; }
+  if (!isAllResolved(state.conflict)) { toast(SAVE_COPY.unresolved); return; }
   const merged = computeMerged(state.conflict);
   state.busy = true; render();
   try {
     const r = await writeFile(state.file.path, merged, state.conflict.remote.sha, commitMessage.merge(state.file.path));
     state.file.sha = r.sha; state.file.content = merged;
     backToRead(); state.conflict = null;
-    toast('合并已保存');
+    toast(SAVE_COPY.merged);
   } catch (e) {
     toast(e.message);
   }
@@ -762,6 +777,7 @@ async function saveCopy(which) {
 /* ---------- 渲染 ---------- */
 
 function render() {
+  syncEditorChrome(); // #65：编辑 / 冲突态锁死侧栏（☰ 显隐、动作区容器），见末尾接线块
   // #64：阅读加载 / 三档失败落位优先；其次是没打开笔记时的空状态。
   // 成功打开后 readState=null、emptyActive=false、view=editor，落到原 renderEditor()，
   // 正文渲染结果与改动前逐字节一致（本票不碰 md 实例 / 插件顺序 / <article class="md">）。
@@ -864,7 +880,7 @@ function renderOps() {
   if (!state.ops) return '';
   // 编辑态：三个动作置灰。做的不是「自动先保存再执行」——保存一旦撞上远端改动，
   // 用户会被扔进冲突合并界面，本来只想改个名字的人得先处理冲突（#11 已定不做）。
-  const editing = state.view === 'editor' && state.mode === 'edit';
+  const editing = isLocked(); // #65：编辑 / 冲突态都置灰但仍能按（不 disable）
   const cls = editing ? ' is-disabled' : '';
   return '<div class="sheet-mask" data-act="closeOps"></div>' +
     '<div class="sheet auto">' +
@@ -1288,14 +1304,22 @@ function onTaskClick(line) {
 function renderEditor() {
   const name = state.path.split('/').pop();
 
+  // #65：动作区落在 #61 骨架层的 #edit-actions（在 #app 之外、节点常驻、随可见
+  // 视口移动），不再写进 #app 的 .foot——重画正文永不碰动作区，也不换输入框节点。
+  // 冲突逐字比对界面与预览层内部一个字不改，只换落位。
+  const actionsHost = document.getElementById('edit-actions');
+
   if (state.mode === 'conflict') {
+    // C-4：左上「返回」退回编辑态（草稿原样、不加提示），不再是 backHref() 回目录。
     app.innerHTML =
-      '<header class="bar"><a class="back" href="' + backHref() + '">‹ 返回</a><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
+      '<header class="bar"><button class="back" id="conflict-back">‹ 返回</button><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
       '<main class="editor-body">' + renderConflict() + '</main>' +
-      '<footer class="foot"><button class="primary" id="preview-btn">预览改动处理</button></footer>' +
       renderToast();
+    if (actionsHost) actionsHost.innerHTML = '<button class="primary" id="preview-btn">预览改动处理</button>';
     const pb = document.getElementById('preview-btn');
     if (pb) pb.addEventListener('click', () => { state.conflict.previewOpen = !state.conflict.previewOpen; state.conflict.copyPrompt = false; render(); });
+    const cback = document.getElementById('conflict-back');
+    if (cback) cback.addEventListener('click', conflictBackToEdit);
     if (state.activeFrag != null) requestAnimationFrame(positionBubble);
     return;
   }
@@ -1304,25 +1328,35 @@ function renderEditor() {
     ? '<article class="md">' + md.render(state.file.content, { notePath: state.path }) + '</article>'
     : '<textarea class="editor" id="editor">' + esc(state.draft) + '</textarea>';
 
-  // 阅读态的「编辑」不再是瞬切：它要先读一次最新版（#34）。这一下约一秒，
-  // 所以按钮得有忙态——一个点了没反应的按钮，用户会再点一次或以为坏了。
+  // 阅读态的「编辑」要先读一次最新版（#34 / #65），按钮有「读取中…」忙态；
+  // 读不到就停在阅读态，落位一句说明并给「重试」，不进编辑。
   const actions = state.mode === 'read'
     ? (state.editChecking
       ? '<button class="primary" id="edit-btn" disabled>读取中…</button>'
-      : '<button class="primary" id="edit-btn">编辑</button>')
+      : (state.editReadError
+        ? '<span class="action-note">' + esc(state.editReadError) + '</span>' +
+          '<button class="primary" id="edit-btn">重试</button>'
+        : '<button class="primary" id="edit-btn">编辑</button>'))
     : '<button id="cancel-btn">取消</button><button class="primary" id="save-btn">保存</button>';
 
-  // 笔记页右上角也有「⋯」，内容与目录页相同。编辑态下按钮**不 disable**——
+  // 笔记页右上角也有「⋯」，内容与目录页相同。编辑 / 冲突态下按钮**不 disable**——
   // disable 掉就点不动，那句「先保存或取消」也就没人看得见；置灰交给样式，提示交给点一下。
-  const more = '<button class="row-more' + (state.mode === 'edit' ? ' is-disabled' : '') +
+  const more = '<button class="row-more' + (isLocked() ? ' is-disabled' : '') +
     '" data-more="' + esc(state.path) + '" aria-label="更多操作">⋯</button>';
 
+  // 阅读态左上仍是「‹ 返回」（#61 的落地语义）；编辑态换成「退出编辑」——
+  // 手机上左上角那颗是回阅读态，不是「关掉这篇」，返回永远只退一层。
+  const back = state.mode === 'edit'
+    ? '<button class="back" id="exit-edit-btn">‹ 退出编辑</button>'
+    : '<a class="back" href="' + backHref() + '">‹ 返回</a>';
+
   app.innerHTML =
-    '<header class="bar"><a class="back" href="' + backHref() + '">‹ 返回</a><span class="title">' + esc(name) + '</span>' + more + '</header>' +
+    '<header class="bar">' + back + '<span class="title">' + esc(name) + '</span>' + more + '</header>' +
     '<main class="editor-body">' + body + '</main>' +
-    '<footer class="foot">' + actions + '</footer>' +
     renderOverlays() +
     renderToast();
+
+  if (actionsHost) actionsHost.innerHTML = actions;
 
   const ta = document.getElementById('editor');
   if (ta) {
@@ -1331,8 +1365,10 @@ function renderEditor() {
   }
   const eb = document.getElementById('edit-btn');
   if (eb) eb.addEventListener('click', startEdit);
+  const ex = document.getElementById('exit-edit-btn');
+  if (ex) ex.addEventListener('click', exitEdit);
   const cb = document.getElementById('cancel-btn');
-  if (cb) cb.addEventListener('click', () => { state.draft = state.file.content; backToRead(); render(); });
+  if (cb) cb.addEventListener('click', exitEdit); // #65：有改动先问「放弃改动？」
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
   wireDialog();
@@ -1474,8 +1510,9 @@ document.addEventListener('click', async (e) => {
   if (moreBtn) { state.ops = { path: moreBtn.dataset.more }; render(); return; }
   const opBtn = e.target.closest('[data-op]');
   if (opBtn) {
-    // 编辑态：三个动作置灰，点哪个都只说这一句。不自动先保存再执行
-    if (state.view === 'editor' && state.mode === 'edit') { toast('先保存或取消，再改文件'); return; }
+    // #65：编辑 / 冲突态锁死，三个动作置灰但仍能按，按了给这一句（判据 7）。
+    // 不自动先保存再执行；判定走 editor-guard 的 isLocked()，不另读 state.mode。
+    if (isLocked()) { toast(EDIT_COPY.fileOpsHint); return; }
     const subject = state.ops ? state.ops.path : state.path;
     const op = opBtn.dataset.op;
     if (op === 'rename') openRename(subject);
@@ -1709,3 +1746,84 @@ initSettings({
 //     { detail: { target: getNewNoteTarget() } }));  // getNewNoteTarget 由 settings.js 导入
 // 核对逻辑、三态与两条出路文案都在 settings.js（initSettings 已监听本事件），
 // 断网一律说「连不上」，不追目录的改名搬家。本票不抢 openCreate() 的实现。
+
+/* ---------- #65 编辑态与冲突接线（只加 import、这一处接线与几个函数，不重排 / 不改别人函数体） ----------
+   规则全在 editor-guard.js，可见视口几何与监听在 viewport.js；main.js 只注入
+   状态与确认框、把 UI 意图接到既有函数上。不改 backToRead()（#60）与 allowToast
+   的语义；pendingChecks.replay() 的落点（save / commitMerge / 取消编辑）三处都在。 */
+
+/** 注入守卫：mode 取真实 state；草稿基准是「进入编辑那一刻」的 state.file.content；
+    「放弃改动？」用原生 confirm（逐字文案由守卫给出），node 无 DOM 时安全退化。 */
+configureEditorGuard({
+  getMode: () => state.mode,
+  getDirty: () => (state.file ? hasUnsavedChanges(state.draft, state.file.content) : false),
+  confirm: (msg) => (typeof window !== 'undefined' && typeof window.confirm === 'function'
+    ? !!window.confirm(msg) : false),
+});
+
+/** 一次接线：键盘弹起时按可见视口摆编辑动作区（只写 --vv-inset，不碰侧栏横条）。 */
+initViewport();
+
+/**
+ * 锁死侧栏的 UI 落位（由 render() 开头调用，幂等）：
+ *   - 编辑 / 冲突态不给「☰」（判据 8：编辑态不给侧栏入口）；
+ *   - 动作区容器只在正文三态出现，其余态收起。
+ * 宽屏下侧栏照旧在（不隐藏 #sidebar），「点别的笔记被拦住并说明原因」由下面
+ * 捕获阶段的拦截负责。
+ */
+function syncEditorChrome() {
+  const openBtn = document.getElementById('btn-open');
+  if (openBtn) openBtn.hidden = isLocked();
+  const actions = document.getElementById('edit-actions');
+  if (actions) actions.hidden = !(state.view === 'editor' && !state.readState && !state.emptyActive);
+}
+
+/** 退出编辑 / 点取消：有改动先问「放弃改动？」；确认才丢草稿回阅读态，取消留编辑态、草稿原样。 */
+function exitEdit() {
+  if (!guardExitEdit()) return;                       // 取消：留编辑态、草稿一字不差
+  if (state.file) state.draft = state.file.content;  // 确认：丢草稿
+  backToRead();                                      // #60：这一刻补发那篇没送到的勾选
+  render();
+}
+
+/** C-4：冲突态按返回 → 退回编辑态、草稿原样、不加提示（每次只退一层）。 */
+function conflictBackToEdit() {
+  state.mode = 'edit';
+  state.conflict = null;
+  render();
+}
+
+/** 系统返回 / 界面返回（layout.js 派发 ui:back）：按真实 mode 每次退一层。
+    layout 自己的 navState.mode 未必同步，这里不读它的 decision，只读 main 的 state。 */
+document.addEventListener('ui:back', () => {
+  if (state.mode === 'conflict') { conflictBackToEdit(); return; }
+  if (state.mode === 'edit') { exitEdit(); return; }
+  // 阅读态「关掉这篇」归 #61 的返回语义（hash 随系统返回变化），本票不抢。
+});
+
+/**
+ * 编辑 / 冲突态锁死侧栏：拦截所有「打开另一篇」的 hash 链接（树行、搜索结果、
+ * 旧结果行都是 <a href="#/edit/...">），捕获阶段先于别人的监听器执行。
+ * 有改动 → 问「放弃改动？」；确认才丢草稿并继续打开目标，取消留编辑态、草稿原样。
+ * 没改动 → 仍拦住并说明原因（「先保存或取消，再看别的」），不悄悄切走。
+ */
+document.addEventListener('click', (e) => {
+  if (!isLocked()) return;
+  const t = e && e.target;
+  const a = t && t.closest && t.closest('a[href^="#/edit/"]');
+  if (!a) return;
+  let target = '';
+  try { target = decodeURIComponent(a.getAttribute('href').slice('#/edit/'.length)); } catch (_) { return; }
+  if (target === state.path) return;   // 点的是当前这篇，不算换篇
+  e.preventDefault();
+  e.stopPropagation();                 // 也挡住 #63 openPath / 大分发器再改一次 hash
+  if (hasUnsavedChanges(state.draft, state.file ? state.file.content : '')) {
+    if (!guardExitEdit()) return;      // 取消：留编辑态、草稿原样、不导航
+    if (state.file) state.draft = state.file.content;
+    backToRead();
+  } else {
+    toast(EDIT_COPY.lockedHint);       // 没改动也拦住并说明原因
+    return;
+  }
+  location.hash = a.getAttribute('href'); // 确认后才继续打开目标篇
+}, true);
