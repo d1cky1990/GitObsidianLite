@@ -256,3 +256,18 @@ test('newNoteTargetIssueHtml(ok)：没问题时不落任何报错', () => {
   assert.equal(newNoteTargetIssueHtml('ok', 'x'), '');
   assert.equal(newNoteTargetIssueHtml('whatever', 'x'), '');
 });
+
+/* ---------- 关于：项目地址一行小字（评审修复第 4 条 / §4.3 P-1 第 195 行） ---------- */
+
+test('settingsHtml：关于块补一行项目地址小字，且只放公开仓库地址', () => {
+  const html = settingsHtml({ theme: 'system', target: DEFAULT_TARGET, version: '0.1.0', commit: '3f9c2a1' });
+  const start = html.indexOf('settings-about');
+  assert.ok(start >= 0, '关于块在');
+  const about = html.slice(start, html.indexOf('</section>', start));
+  assert.ok(about.includes('https://github.com/d1cky1990/GitObsidianLite'), '关于要有项目地址');
+  assert.ok(/class="[^"]*settings-project[^"]*"/.test(about), '项目地址是一行独立的小字元素');
+  assert.equal((about.match(/https?:\/\//g) || []).length, 1, '关于块只出现这一个地址，不夹带别的 URL');
+  // 公共界面硬规矩：不写笔记仓库名 / 绝对路径 / 机器名 / 凭据
+  assert.ok(!/D:\\|\/Users\/|ObsidianNote|\.dev\.vars|APP_PASSWORD/.test(about),
+    '关于块不写笔记仓库名 / 绝对路径 / 机器名 / 凭据');
+});

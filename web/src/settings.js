@@ -72,9 +72,12 @@ export function selectTheme(value, opts = {}) {
   return v;
 }
 
-/* ---------- 关于：版本号 + 构建提交短号（取不到只显示版本号、不让构建失败） ---------- */
+/* ---------- 关于：版本号 + 构建提交短号 + 项目地址一行小字
+   （取不到提交号只显示版本号、不让构建失败；项目地址只放公开仓库地址，
+    不写笔记仓库名 / 凭据 / 绝对路径 / 机器名 —— 公共界面硬规矩） ---------- */
 
 export const APP_VERSION = '0.1.0';
+export const PROJECT_URL = 'https://github.com/d1cky1990/GitObsidianLite';
 
 /**
  * 构建那次的提交短号由 vite.config.js 的 define 注入 __APP_COMMIT__。
@@ -145,6 +148,7 @@ export function settingsHtml({ theme = 'system', target = DEFAULT_TARGET,
     '<div class="settings-block settings-about">' +
       '<h2 class="settings-h">关于</h2>' +
       '<p class="settings-version">' + escapeHtml(formatAbout({ version, commit })) + '</p>' +
+      '<p class="settings-project">' + escapeHtml(PROJECT_URL) + '</p>' +
     '</div>' +
   '</section>';
 }
