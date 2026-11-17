@@ -12,11 +12,13 @@ import {
 // #66 文件操作规则层：逐字文案、弹窗模型、常驻浮层骨架、树行入口判定、核对事件。
 // 接线只在这里 import，DOM 同步与事件接线在文件末尾的 /* #66 */ 块。
 import {
-  TEXT, LOCKED_HINT, createdToast, deleteSuccess, pickerHere, classifyDirCheck,
+  TEXT, createdToast, deleteSuccess, createHint,
   createDialogModel, renameDialogModel, moveDialogModel, deleteDialogModel,
   dialogView, fileOpsLayerHtml, shouldStartLongPress,
+  opsSheetHtml, pickerHtml, LONG_PRESS_MS,
   NEW_TARGET_CHECK_EVENT, newNoteTargetCheckDetail,
 } from './file-ops-ui.js';
+import { icon } from './icons.js';
 import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js';
 // 勾选「先记本机、送到再划掉」（#60）：按篇聚合的待发记录、补发、粘性提示门。
 import { createPendingChecks, allowToast } from './pending-checks.js';
@@ -45,7 +47,7 @@ import './style.css';
 //   editor-guard.js → isLocked / guardExitEdit（占位，#65 填充）
 // 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
 // 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
-import { initLayout } from './layout.js';
+import { initLayout, SIDEBAR_BREAKPOINT } from './layout.js';
 import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
 // 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
@@ -131,6 +133,27 @@ app.addEventListener('error', (e) => {
   });
   img.replaceWith(holder.firstChild);
 }, true);
+
+// #66 文件操作常驻浮层：一次性注入到 body（在 #app / 骨架之外），之后 render() 开头的
+// syncFileOpsLayer() 只切 hidden / 改文本，绝不重建 #dlg-input —— 中文拼音组字不中断
+// （§6 第 1 条）。操作表 / 目录选择器各有宿主，没有输入框，内容可随状态重建。
+(function mountFileOpsLayer() {
+  const box = document.createElement('div');
+  box.innerHTML = fileOpsLayerHtml();
+  const layer = box.firstElementChild;
+  if (!layer || !document.body) return;
+  document.body.appendChild(layer);
+  // 输入框事件一次性绑定（常驻节点，绝不每次 render 重复 addEventListener）：
+  const inp = document.getElementById('dlg-input');
+  if (!inp) return;
+  inp.addEventListener('input', () => {
+    const d = state.dialog;
+    if (!d) return;
+    d.value = inp.value;
+    if (d.error) d.error = ''; // 一改动就清掉上一句撞名提示；不重画、不换节点
+  });
+  inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submitDialog(); });
+})();
 
 /* ---------- 访问密码（服务端配置了 APP_PASSWORD 时启用） ---------- */
 function showPasswordModal() {
@@ -680,6 +703,7 @@ async function save() {
     const r = await writeFile(state.file.path, state.draft, state.file.sha, commitMessage.edit(state.file.path));
     state.file.sha = r.sha; state.file.content = state.draft;
     backToRead();
+    refreshTree(); // #66 保存之后树就地刷新
     toast(SAVE_COPY.saved);
   } catch (e) {
     const verdict = classifySaveError(e);
@@ -786,6 +810,7 @@ async function saveCopy(which) {
 
 function render() {
   syncEditorChrome(); // #65：编辑 / 冲突态锁死侧栏（☰ 显隐、动作区容器），见末尾接线块
+  syncFileOpsLayer(); // #66：常驻浮层同步（在 app.innerHTML 重画之外，#dlg-input 不换节点）
   // #64：阅读加载 / 三档失败落位优先；其次是没打开笔记时的空状态。
   // 成功打开后 readState=null、emptyActive=false、view=editor，落到原 renderEditor()，
   // 正文渲染结果与改动前逐字节一致（本票不碰 md 实例 / 插件顺序 / <article class="md">）。
@@ -877,97 +902,84 @@ function renderList() {
   wireDialog();
 }
 
-/* ---------- 文件操作的浮层：操作表 / 弹窗 / 目录选择器 ---------- */
+/* ---------- 文件操作的浮层：常驻层 + 操作表 / 弹窗 / 目录选择器（#66） ---------- */
 
-function renderOverlays() {
-  return renderOps() + renderPicker() + renderDialog();
+/**
+ * #66 常驻浮层同步：把 state.dialog 经 dialogView() 机械写到 #fo-modal 各常驻节点，
+ * 操作表 / 目录选择器 HTML 写进各自宿主。**#dlg-input 只在「新打开」(fresh) 时设 value
+ * 并聚焦，其余重画绝不覆盖** —— 中文拼音组字不中断、撞名拒绝也不把名字改掉。
+ * 目录选择器打开时弹窗暂时收起（同一常驻浮层里就地切换），选完带着新目录回来。
+ */
+function syncFileOpsLayer() {
+  const layer = document.getElementById('file-ops-layer');
+  if (!layer) return;
+  const d = state.dialog;
+  const v = dialogView(d);
+  const byId = (id) => document.getElementById(id);
+  const setHidden = (id, hidden) => { const n = byId(id); if (n) n.hidden = hidden; };
+  const setText = (id, text) => { const n = byId(id); if (n) n.textContent = text; };
+
+  const showModal = v.show && !state.picker; // 选目录时弹窗收起，只显示选择器
+  const mask = layer.querySelector('.fo-mask');
+  if (mask) mask.hidden = !showModal;
+  setHidden('fo-modal', !showModal);
+
+  if (v.show) {
+    setText('fo-title', v.title);
+    setHidden('fo-hint', !v.showHint);
+    setText('fo-hint', v.hint);
+    setHidden('fo-warn', !v.showWarn);
+    setText('fo-warn', v.warn);
+    setHidden('fo-body', !v.showBody);
+    const body = byId('fo-body');
+    if (body) body.innerHTML = v.bodyHtml; // 删除正文含 <b>撤销</b>（renderEmphasis 已转义）
+    setHidden('dlg-input', !v.showInput);
+    const inp = byId('dlg-input');
+    if (inp && v.fresh) { inp.value = v.value; inp.focus(); }
+    setHidden('fo-dir', !v.showDir);
+    setText('fo-dir-label', v.dirLabel);
+    setText('fo-err', v.error);
+    const ok = byId('fo-ok');
+    if (ok) { ok.textContent = v.okLabel; ok.className = v.okClass; ok.dataset.act = v.okAct; }
+  }
+  if (d && d.__fresh) d.__fresh = false; // 后续重画不再覆盖正在组字的输入框
+
+  const opsHost = byId('fo-ops-host');
+  if (opsHost) opsHost.innerHTML = renderOps();
+  const pickerHost = byId('fo-picker-host');
+  if (pickerHost) pickerHost.innerHTML = renderPicker();
+  layer.hidden = !(showModal || state.ops || state.picker);
 }
 
-/** 「⋯」点开的那张表。三个动作，笔记页与目录页同一套。 */
+/** #66：浮层已迁到 body 末尾的常驻层，这里留空——避免 app.innerHTML 重画时换掉 #dlg-input。 */
+function renderOverlays() {
+  return '';
+}
+
+/** 「⋯」点开的操作表。三个动作，编辑 / 冲突态置灰但仍能按（与 #65 同一句锁提示）。 */
 function renderOps() {
   if (!state.ops) return '';
-  // 编辑态：三个动作置灰。做的不是「自动先保存再执行」——保存一旦撞上远端改动，
-  // 用户会被扔进冲突合并界面，本来只想改个名字的人得先处理冲突（#11 已定不做）。
-  const editing = isLocked(); // #65：编辑 / 冲突态都置灰但仍能按（不 disable）
-  const cls = editing ? ' is-disabled' : '';
-  return '<div class="sheet-mask" data-act="closeOps"></div>' +
-    '<div class="sheet auto">' +
-    '<div class="sheet-head">' + esc(baseOf(state.ops.path)) + '</div>' +
-    '<div class="ops">' +
-    '<button class="op' + cls + '" data-op="rename">重命名</button>' +
-    '<button class="op' + cls + '" data-op="move">移动</button>' +
-    '<button class="op danger' + cls + '" data-op="delete">删除</button>' +
-    '</div>' +
-    (editing ? '<div class="op-hint">编辑中，先保存或取消</div>' : '') +
-    '<div class="sheet-foot"><div class="sheet-row">' +
-    '<button data-act="closeOps">取消</button></div></div>' +
-    '</div>';
+  return opsSheetHtml({
+    name: baseOf(state.ops.path),
+    locked: isLocked(),
+    lockedHint: EDIT_COPY.fileOpsHint,
+  });
 }
 
-/** 弹窗：填名字（新建 / 重命名）与两次确认（删除 / 移动）共用一套壳。 */
+/** #66：弹窗由 syncFileOpsLayer() + dialogView() 同步到常驻 #fo-modal，不再返回 HTML。 */
 function renderDialog() {
-  const d = state.dialog;
-  if (!d) return '';
-  let inner;
-  if (d.type === 'prompt') {
-    inner = '<div class="modal-title">' + esc(d.title) + '</div>' +
-      '<div class="modal-hint">' + esc(d.hint) + '</div>' +
-      '<input id="dlg-input" class="dlg-input" type="text" value="' + esc(d.value) + '"' +
-      ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
-      (d.warn ? '<div class="modal-warn">' + d.warn + '</div>' : '') +
-      '<div class="modal-err">' + esc(d.error || '') + '</div>' +
-      '<div class="modal-btns"><button data-act="closeDialog">取消</button>' +
-      '<button class="primary" data-act="submitDialog">' + esc(d.okLabel) + '</button></div>';
-  } else {
-    inner = '<div class="modal-title">' + esc(d.title) + '</div>' +
-      '<div class="modal-body">' + d.body + '</div>' +
-      '<div class="modal-btns"><button data-act="closeDialog">取消</button>' +
-      '<button class="' + (d.danger ? 'danger' : 'primary') + '" data-act="confirmDialog">' +
-      esc(d.okLabel) + '</button></div>';
-  }
-  return '<div class="modal-mask" data-act="closeDialog"></div><div class="modal">' + inner + '</div>';
+  return '';
 }
 
+/** 目录选择器：复用今天「移动笔记」那套（逐层 / 上一级 / 就放这里 /「（没有子目录）」）。 */
 function renderPicker() {
-  const p = state.picker;
-  if (!p) return '';
-  const dirs = (p.entries || []).filter((e) => e.type === 'dir');
-  let rows = '';
-  if (p.dir) {
-    rows += '<button class="row pick-row" data-enter="' + esc(dirOf(p.dir)) + '">' +
-      '<span class="ic dir">↑</span><span class="nm">上一级</span></button>';
-  }
-  rows += dirs.map((d) =>
-    '<button class="row pick-row" data-enter="' + esc(d.path) + '">' +
-    '<span class="ic dir">▸</span><span class="nm">' + esc(d.name) + '</span></button>').join('');
-  if (!dirs.length && !p.busy) rows += '<div class="center dim">（没有子目录）</div>';
-
-  return '<div class="sheet-mask" data-act="closeDialog"></div>' +
-    '<div class="sheet">' +
-    '<div class="sheet-head">移动到…</div>' +
-    // 这里的路径是**纯文字**，不是面包屑链接：选择器里点一下就退出选择器（改的是页面
-    // 的 hash），那是陷阱。要走上去有上面的「上一级」。
-    '<div class="pick-crumbs">' + (p.dir ? esc(p.dir.split('/').join(' / ')) : '根目录') + '</div>' +
-    '<div class="sheet-body pick-body">' + (p.busy ? '<div class="center">加载中…</div>' : rows) + '</div>' +
-    '<div class="sheet-foot">' +
-    '<div class="pick-target">放这里：<b>' + esc(p.dir || '根目录') + '</b></div>' +
-    (p.error ? '<div class="modal-err">' + esc(p.error) + '</div>' : '') +
-    '<div class="sheet-row"><button data-act="closeDialog">取消</button>' +
-    // 目录还在读的时候这个键不能答应——那时候判不了重名。但它也不该是个死键：
-    // 灰着，点一下会说清为什么（见 pickerMoveHere）
-    '<button class="primary' + (p.busy ? ' is-disabled' : '') + '" data-act="moveHere">就放这里</button>' +
-    '</div></div></div>';
+  return state.picker ? pickerHtml(state.picker) : '';
 }
 
-/** 弹窗里的输入框：值存回 state（重渲染不丢），回车等于「确定」。 */
+/** #66：#dlg-input 常驻，input / keydown 已在 mountFileOpsLayer 里一次性绑定，
+ *  value 与聚焦由 syncFileOpsLayer() 的 fresh 分支处理；这里不再重复绑定、不换节点。 */
 function wireDialog() {
-  const d = state.dialog;
-  if (!d || d.type !== 'prompt') return;
-  const inp = document.getElementById('dlg-input');
-  if (!inp) return;
-  inp.addEventListener('input', () => { d.value = inp.value; if (d.error) { d.error = ''; } });
-  inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submitDialog(); });
-  inp.focus();
+  // 有意留空：保留既有调用点，避免每次 render 重复 addEventListener 把组字打断。
 }
 
 /* ---------- 文件操作：#26 的四个动作 ---------- */
@@ -984,63 +996,71 @@ function closeOverlays() {
   state.picker = null;
 }
 
-function openCreate() {
+/** #66 新建：落点只读「选中的文件夹」与设置里的「指定目录」，绝不读打开的那篇路径。 */
+function openCreate({ skipCheck = false } = {}) {
   state.ops = null;
-  state.dialog = {
-    type: 'prompt', action: 'create',
-    title: '新建笔记',
-    hint: '放在 ' + (state.path || '根目录') + '。只填名字，路径由当前目录决定。',
-    value: '', error: '', okLabel: '新建',
-  };
+  state.picker = null;
+  const target = getNewNoteTarget();
+  state.dialog = Object.assign(
+    createDialogModel({ selectedFolder: getSelectedFolder(), target }),
+    { __fresh: true },
+  );
+  // 打开新建弹窗那一刻派发核对事件（#63 的 initSettings 已监听：指定目录在不在、
+  // 三态与两条出路文案；断网一律说「连不上」）。
+  if (!skipCheck) {
+    document.dispatchEvent(new CustomEvent(NEW_TARGET_CHECK_EVENT, {
+      detail: newNoteTargetCheckDetail(target),
+    }));
+  }
   render();
 }
 
 function openRename(path) {
   state.ops = null;
-  state.dialog = {
-    type: 'prompt', action: 'rename', subject: path,
-    title: '重命名',
-    hint: '只改名字，还放在 ' + (dirOf(path) || '根目录') + '。',
-    warn: '别的笔记里指向「' + esc(baseOf(path)) + '」的链接会断——' +
-      '本端只认得文件名，读不到别的笔记的正文，改不了那些链接，也报不出断了几条。',
-    value: stemOf(path), error: '', okLabel: '改名',
-  };
+  state.dialog = Object.assign(renameDialogModel({ path }), { __fresh: true });
+  render();
+}
+
+/** #66 移动：与新建同一形态（名字 + 已填好的目录，目录就在弹窗里改），不再另起二级确认。 */
+function openMove(path) {
+  state.ops = null;
+  state.dialog = Object.assign(moveDialogModel({ path }), { __fresh: true });
   render();
 }
 
 function openDelete(path) {
   state.ops = null;
-  state.dialog = {
-    type: 'confirm', action: 'delete', subject: path,
-    title: '删除「' + baseOf(path) + '」？',
-    body: '删掉就没了，不进回收站，也别处没有副本。' +
-      '删完屏幕下方会给一次<b>撤销</b>，那一下能把原内容照原样放回去。',
-    okLabel: '删除', danger: true,
-  };
+  state.dialog = deleteDialogModel({ path });
   render();
 }
 
-/** 弹窗的「确定」。填名字的两个动作先过一遍本地规则，省一次注定失败的写。 */
+/** 弹窗的「确定」。填名字的动作先过一遍本地规则，省一次注定失败的写。 */
 async function submitDialog() {
   const d = state.dialog;
   if (!d || d.type !== 'prompt') return;
   const n = normalizeNewName(d.value);
   if (!n.ok) { d.error = n.error; render(); return; }
-  if (d.action === 'create') await doCreate(state.path, n.name);
-  else await doRename(d.subject, n.name);
+  if (d.action === 'create') await doCreate(d.dir, n.name); // 落点取弹窗里的目录，绝不读 state.path
+  else if (d.action === 'rename') await doRename(d.subject, n.name);
+  else if (d.action === 'move') {
+    const to = joinPath(d.dir, n.name); // 目录就在弹窗里改，名字沿用预填（可改）
+    if (to === d.subject) { toast('位置没变'); render(); return; }
+    await doMove(d.subject, to);
+  }
 }
 
 async function confirmDialog() {
   const d = state.dialog;
   if (!d || d.type !== 'confirm') return;
   if (d.action === 'delete') await doDelete(d.subject);
-  else if (d.action === 'move') await doMove(d.subject, d.to);
+  // #66 移动已改成与新建同形态的 prompt 弹窗（submitDialog 处理），不再走 confirm
 }
 
 /* ---------- 新建 ---------- */
 
 async function doCreate(dir, name) {
   const path = joinPath(dir, name);
+  const prev = state.dialog; // 撞名重开时保留用户原始输入 / 改过的目录，不改名字
   closeOverlays();
   state.busy = true; render();
   try {
@@ -1048,16 +1068,25 @@ async function doCreate(dir, name) {
     await createFile(path, '\n', commitMessage.create(path));
   } catch (e) {
     state.busy = false;
-    toast(e.exists ? '这个名字已经有了' : '没建成：' + e.message);
+    if (e.exists) {
+      // 撞名 → 拒绝并说「这个名字已经有了」：不自动加后缀、不二次确认、不改名字。
+      // __fresh:false + 常驻 #dlg-input → 正在组字的名字原样保留，不覆盖。
+      state.dialog = Object.assign(
+        {}, prev || createDialogModel({ selectedFolder: getSelectedFolder(), target: getNewNoteTarget() }),
+        { error: TEXT.duplicate, __fresh: false },
+      );
+    } else {
+      toast('没建成：' + e.message);
+    }
     render();
     return;
   }
   state.busy = false;
-  // 新建完直接进这篇、并且直接进编辑态：空笔记停在阅读态没有意义，
-  // 不然还得「点一下行 → 点编辑」两下才开始写。
+  refreshTree(); // #66 写后树就地刷新
+  // 新建完直接进这篇、并且直接进编辑态：空笔记停在阅读态没有意义。
   state.openInEdit = path;
   location.hash = '#/edit/' + encodeURIComponent(path);
-  toast('已新建 ' + name);
+  toast(createdToast(name));
 }
 
 /* ---------- 删除（含撤销） ---------- */
@@ -1085,10 +1114,12 @@ async function doDelete(path) {
   state.undo = { path: src.path, content: src.content, dir: dirOf(path) };
   state.busy = false;
   removeRecentFromStore(path); // #64 应用内删掉的那篇（含正在读的）→ 从最近打开去掉那条
-  // 删的正是当前打开的那篇 → 回到它所在的目录
-  if (state.view === 'editor') gotoDir(state.undo.dir);
-  else await loadDir(state.path);
-  toast('已删除 ' + baseOf(path), { label: '撤销', run: undoDelete });
+  // #66：删完右侧回空状态、侧栏不关、树里选中退回它所在的文件夹（作废旧规矩「回目录」）。
+  setSelectedFolder(state.undo.dir);
+  refreshTree();               // 写后树就地刷新
+  state.view = 'list';         // 不再停留在已删那篇的阅读 / 编辑态
+  showEmptyState();            // 右侧空状态（保留 #64 最近列表落位）
+  toast(deleteSuccess(baseOf(path)), { label: TEXT.undoAction, run: undoDelete });
 }
 
 async function undoDelete() {
@@ -1101,8 +1132,8 @@ async function undoDelete() {
     // 原本是 0 字节的文件只能回来成一个空行：Gitee 建不出空内容的文件（实测）。
     await createFile(u.path, u.content || '\n', commitMessage.undoDelete(u.path));
     state.busy = false;
+    refreshTree(); // #66 写后树就地刷新
     toast('已恢复 ' + baseOf(u.path));
-    if (state.view === 'list') await loadDir(state.path);
   } catch (e) {
     state.busy = false;
     toast(e.exists ? '没能恢复：那个位置上又有东西了' : '没能恢复：' + e.message);
@@ -1115,6 +1146,7 @@ async function undoDelete() {
 async function doRename(oldPath, newName) {
   const dir = dirOf(oldPath);
   const next = renameTarget(oldPath, newName);
+  const prev = state.dialog; // 撞名重开时保留输入的名字，不改名、不自动加后缀
   closeOverlays();
   if (next === oldPath) { toast('名字没变'); render(); return; }
   state.busy = true; render();
@@ -1123,8 +1155,9 @@ async function doRename(oldPath, newName) {
     const entries = await listDir(dir);
     if (hasName(entries, newName, { except: oldPath })) {
       state.busy = false;
-      openRename(oldPath);
-      state.dialog.error = '这个名字已经有了';
+      state.ops = null;
+      state.dialog = Object.assign({}, prev || renameDialogModel({ path: oldPath }),
+        { error: TEXT.duplicate, __fresh: false });
       return render();
     }
   } catch (e) {
@@ -1139,7 +1172,7 @@ async function doMove(from, to) {
 }
 
 /**
- * 改名的执行体。两步，顺序不能反。
+ * 改名 / 移动的执行体。两步，顺序不能反。
  * @param {'rename'|'move'} verb
  */
 async function relocate(from, to, verb) {
@@ -1160,7 +1193,7 @@ async function relocate(from, to, verb) {
   } catch (e) {
     state.busy = false;
     toast(e.exists ? '那边已经有同名的了，没有改动' : '没有改动：新的那份没建起来（' + e.message + '）');
-    if (state.view === 'list') await loadDir(state.path);
+    refreshTree(); // #66 写后树就地刷新（这一步没建起来，也把当前名单对齐）
     render();
     return;
   }
@@ -1172,25 +1205,28 @@ async function relocate(from, to, verb) {
   } catch (e) {
     state.busy = false;
     toast('新名字已经建好，旧的那份没删掉：' + e.message + '，现在两份都在');
-    if (state.view === 'list') await loadDir(state.path);
+    refreshTree(); // #66 半成品也刷树，让多出来的那份看得见、删得掉
     render();
     return;
   }
 
   state.busy = false;
   replaceRecentPathInStore(from, to); // #64 改名 / 移动 → 直接换成新路径（搬走的不追）
-  if (state.view === 'editor') location.hash = '#/edit/' + encodeURIComponent(to);
-  else gotoDir(dirOf(to));
+  // #66：右侧打开新路径、树里选中它、地址栏跟着换；不追旧链接、不报断链数。
+  selectPath(to);
+  refreshTree();
+  location.hash = '#/edit/' + encodeURIComponent(to);
   toast(verb === 'rename' ? '已改名为 ' + baseOf(to) : '已移到 ' + (dirOf(to) || '根目录'));
 }
 
 /* ---------- 移动用的目录选择器 ---------- */
 
-function openPicker(path) {
+/** #66 目录选择器：从弹窗的目录块就地打开（onPick='dialog'），或 #63「指定目录」入口（onPick='settings'）。 */
+function openPicker({ dir = '', onPick = 'dialog' } = {}) {
   state.ops = null;
-  state.picker = { path, dir: '', entries: [], busy: true, error: '' };
+  state.picker = { dir, entries: [], busy: true, error: '', onPick };
   render();
-  loadPickerDir('');
+  loadPickerDir(dir);
 }
 
 async function loadPickerDir(dir) {
@@ -1206,26 +1242,28 @@ async function loadPickerDir(dir) {
   p.busy = false; render();
 }
 
-/** 「就放这里」——先本地判一次同名，再弹确认。 */
+/** 「就放这里」——目录回填到弹窗（就地改，不 confirm），或写回设置的「指定目录」。 */
 function pickerMoveHere() {
   const p = state.picker;
   if (!p) return;
-  // 还没读完就不能答应：这一步要拿目标目录的清单判重名，清单没到手时判不了。
-  // 但也不能装作没听见——点一下就静悄悄什么都不发生，比报错更让人迷惑
+  // 还没读完就不能答应：清单没到手时判不了重名，也不该装作没听见
   if (p.busy) { p.error = '这个目录还没读完，稍等一下'; render(); return; }
-  const from = p.path;
-  const to = moveTarget(from, p.dir);
-  if (to === from) { p.error = '它已经在这个目录里了'; render(); return; }
-  if (hasName(p.entries, baseOf(from))) { p.error = '这个目录里已经有同名的了'; render(); return; }
-  // 确认文案与重命名**不同**：断的不是同一批链接
-  state.dialog = {
-    type: 'confirm', action: 'move', subject: from, to,
-    title: '移到 ' + (p.dir || '根目录') + '？',
-    body: '名字还是 <b>' + esc(baseOf(from)) + '</b>。' +
-      '别的笔记里<b>用完整路径写</b>的链接会断，<b>只写名字</b>的那种没事——' +
-      '本端不会替你改链接，也报不出断了几条。',
-    okLabel: '移动',
-  };
+  const dir = p.dir;
+  if (p.onPick === 'settings') {
+    // #63「指定目录」入口：把选中的目录写回设置（fixed 档），不改这一次
+    setNewNoteTarget({ mode: 'fixed', dir });
+    state.picker = null;
+    render();
+    return;
+  }
+  // 弹窗里的目录块（新建 / 移动同形态）：把目录回填到弹窗，目录就地改完，
+  // 不另起二级确认；重名在 submitDialog 里判。
+  const d = state.dialog;
+  if (d) {
+    d.dir = dir;
+    if (d.action === 'create') d.hint = createHint(dir);
+  }
+  state.picker = null;
   render();
 }
 
@@ -1495,10 +1533,14 @@ document.addEventListener('click', async (e) => {
       case 'closePreview': state.conflict.previewOpen = false; state.conflict.copyPrompt = false; render(); break;
       case 'commitMerge': commitMerge(); break;
       case 'openCopy': state.conflict.copyPrompt = true; render(); break;
-      // ---- #26 文件操作 ----
+      // ---- #26 / #66 文件操作 ----
       case 'newFile': openCreate(); break;
       case 'closeOps': state.ops = null; render(); break;
-      case 'closeDialog': state.dialog = null; render(); break;
+      case 'closeDialog': closeOverlays(); render(); break;  // 收起全部浮层，不清撤销提示
+      case 'closePicker': state.picker = null; render(); break; // 只关选择器，弹窗带目录回来
+      case 'pickDir': // 弹窗里的目录块：就地打开目录选择器改这一次
+        openPicker({ dir: state.dialog ? state.dialog.dir : '', onPick: 'dialog' });
+        break;
       case 'submitDialog': submitDialog(); break;
       case 'confirmDialog': confirmDialog(); break;
       case 'moveHere': pickerMoveHere(); break;
@@ -1524,7 +1566,7 @@ document.addEventListener('click', async (e) => {
     const subject = state.ops ? state.ops.path : state.path;
     const op = opBtn.dataset.op;
     if (op === 'rename') openRename(subject);
-    else if (op === 'move') openPicker(subject);
+    else if (op === 'move') openMove(subject); // #66：与新建同形态的弹窗，不另起目录确认
     else if (op === 'delete') openDelete(subject);
     return;
   }
@@ -1733,7 +1775,7 @@ document.addEventListener('visibilitychange', () => {
    黑白三档即时生效、指定目录核对。逻辑都在 sidebar-search.js / settings.js，
    main.js 只注入依赖并各调一次 init；与 #62 树接线、#64 空状态/阅读接线并存。 */
 import { initSidebarSearch } from './sidebar-search.js';
-import { initSettings } from './settings.js';
+import { initSettings, getNewNoteTarget, setNewNoteTarget } from './settings.js';
 import { showSidebarView } from './layout.js';
 
 initSidebarSearch({
@@ -1749,11 +1791,110 @@ initSettings({
   dirProbe: (dir) => listDir(dir),
 });
 
-// #66 打开新建弹窗那一刻，派发下面这条事件触发「指定目录不在了」核对：
-//   document.dispatchEvent(new CustomEvent('ui:new-note-target-check',
-//     { detail: { target: getNewNoteTarget() } }));  // getNewNoteTarget 由 settings.js 导入
-// 核对逻辑、三态与两条出路文案都在 settings.js（initSettings 已监听本事件），
-// 断网一律说「连不上」，不追目录的改名搬家。本票不抢 openCreate() 的实现。
+/* ---------- #66 文件操作接线（只加 import、事件监听与树行入口，不重排 / 不改别人函数体） ----------
+   入口：侧栏底部「新建」(ui:shell-action new) / 正文顶栏常驻「⋯」(more) /
+   窄屏长按笔记行 / 宽屏悬停才显示行尾「⋯」。三者共用 state.ops 那张操作表，
+   编辑 / 冲突态置灰仍可按的判定与锁提示沿用 #65 的 isLocked() + EDIT_COPY.fileOpsHint。
+   打开新建弹窗那一刻的「指定目录在不在」核对由 openCreate() 派发 ui:new-note-target-check
+   （逻辑与三态文案在 settings.js）；#63 的 ui:pick-target-dir / ui:target-fix-here 在这里接。 */
+
+// 侧栏底部「新建」与正文顶栏常驻「⋯」：layout.js 派发 ui:shell-action，
+// settings.js / sidebar-search.js 也各自监听同一事件，各管各的 action，互不干扰。
+document.addEventListener('ui:shell-action', (e) => {
+  const action = e && e.detail && e.detail.action;
+  if (action === 'new') { openCreate(); return; }
+  if (action === 'more') {
+    // 正文顶栏的「⋯」是主入口：对「打开的那篇」出操作表。
+    // 空状态 / 目录页没有打开的那篇时不装作有对象可操作。
+    if (state.view === 'editor' && !state.readState && !state.emptyActive && state.path) {
+      state.ops = { path: state.path };
+      render();
+    }
+    return;
+  }
+});
+
+// #63「指定目录」入口：设置面板里点目录行，打开目录选择器，选完写回 fixed 档。
+document.addEventListener('ui:pick-target-dir', (e) => {
+  const dir = (e && e.detail && e.detail.dir) || '';
+  openPicker({ dir, onPick: 'settings' });
+});
+// #63「就在这里改这一次」：打开新建弹窗，目录块里当下就能改（不改设置、不再重复报目录不在了）。
+document.addEventListener('ui:target-fix-here', () => { openCreate({ skipCheck: true }); });
+
+// 树行入口：窄屏长按笔记行出操作表（按下就有反馈）、宽屏悬停才显示行尾「⋯」；
+// 文件夹行不响应长按、没有改名 / 移动 / 删除；不做左滑。树行由 #62 渲染，
+// 这里只在常驻容器上做事件委托，不改 tree.js、不给树行挂常驻「⋯」。
+(function wireTreeRowOps() {
+  const host = document.getElementById('tree-view');
+  if (!host) return;
+  const isWide = () => typeof globalThis.matchMedia === 'function' &&
+    globalThis.matchMedia('(min-width: ' + SIDEBAR_BREAKPOINT + 'px)').matches;
+  const notePathOf = (row) => {
+    const href = row && row.getAttribute ? (row.getAttribute('href') || '') : '';
+    const prefix = '#/edit/';
+    if (!href.startsWith(prefix)) return '';
+    try { return decodeURIComponent(href.slice(prefix.length)); } catch (_) { return ''; }
+  };
+  const showOpsFor = (row) => {
+    const path = notePathOf(row);
+    if (path) { state.ops = { path }; render(); }
+  };
+
+  // 宽屏悬停才显示行尾「⋯」：hover 时就地插入一个带内联 SVG 的 span（不是按钮，
+  // 合法放在 <a> 里），移出就摘掉——树行不挂常驻「⋯」。
+  host.addEventListener('mouseover', (e) => {
+    if (!isWide()) return;
+    const row = e.target && e.target.closest ? e.target.closest('.tree-row.is-note') : null;
+    if (!row || row.querySelector('.tree-row-more')) return;
+    const more = document.createElement('span');
+    more.className = 'tree-row-more';
+    more.setAttribute('aria-label', '更多操作');
+    more.innerHTML = icon('more', 20);
+    row.appendChild(more);
+  });
+  host.addEventListener('mouseout', (e) => {
+    const row = e.target && e.target.closest ? e.target.closest('.tree-row.is-note') : null;
+    if (!row || (e.relatedTarget && row.contains(e.relatedTarget))) return;
+    const more = row.querySelector('.tree-row-more');
+    if (more) more.remove();
+  });
+
+  // 点行尾「⋯」：捕获阶段先于「打开这篇」的默认跳转，出操作表。
+  // suppressClick 由长按触发置位，避免长按松手那一下顺手把笔记打开。
+  let suppressClick = false;
+  host.addEventListener('click', (e) => {
+    if (suppressClick) { suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
+    const more = e.target && e.target.closest ? e.target.closest('.tree-row-more') : null;
+    if (!more) return;
+    e.preventDefault(); e.stopPropagation();
+    const row = more.closest('.tree-row.is-note');
+    if (row) showOpsFor(row);
+  }, true);
+
+  // 窄屏长按笔记行：按下立刻给反馈（.is-pressing），到点出操作表；文件夹行不响应。
+  let timer = null;
+  let pressing = null;
+  function clearPress() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (pressing) { pressing.classList.remove('is-pressing'); pressing = null; }
+  }
+  host.addEventListener('pointerdown', (e) => {
+    suppressClick = false;
+    const row = e.target && e.target.closest ? e.target.closest('.tree-row.is-note') : null;
+    if (!row || !shouldStartLongPress({ isNoteRow: true, wide: isWide() })) return;
+    pressing = row;
+    row.classList.add('is-pressing'); // 按下就有反馈
+    timer = setTimeout(() => {
+      const path = notePathOf(row);
+      clearPress();
+      suppressClick = true;
+      if (path) { state.ops = { path }; render(); }
+    }, LONG_PRESS_MS);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave', 'scroll'].forEach((type) =>
+    host.addEventListener(type, clearPress, { passive: true }));
+})();
 
 /* ---------- #65 编辑态与冲突接线（只加 import、这一处接线与几个函数，不重排 / 不改别人函数体） ----------
    规则全在 editor-guard.js，可见视口几何与监听在 viewport.js；main.js 只注入

@@ -396,7 +396,7 @@ export function pickerHtml({ dir = '', entries = [], busy = false, error = '' } 
     : '';
   const body = busy ? '<div class="center">加载中…</div>' : (up + rows + empty);
   return [
-    '<div class="sheet-mask" data-act="closeDialog"></div>',
+    '<div class="sheet-mask" data-act="closePicker"></div>',
     '<div class="sheet">',
     '  <div class="sheet-head">' + escText(TEXT.pickerTitle) + '</div>',
     '  <div class="pick-crumbs">' + escText(dir ? dir.split('/').join(' / ') : '根目录') + '</div>',
@@ -404,7 +404,7 @@ export function pickerHtml({ dir = '', entries = [], busy = false, error = '' } 
     '  <div class="sheet-foot">',
     '    <div class="pick-target">' + escText(pickerHere(dir)) + '</div>',
     error ? '    <div class="modal-err">' + escText(error) + '</div>' : '',
-    '    <div class="sheet-row"><button data-act="closeDialog">取消</button>' +
+    '    <div class="sheet-row"><button data-act="closePicker">取消</button>' +
       '<button class="primary' + (busy ? ' is-disabled' : '') + '" data-act="moveHere">' +
       escText(TEXT.pickerConfirm) + '</button></div>',
     '  </div>',
