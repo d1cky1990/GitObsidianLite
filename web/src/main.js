@@ -62,6 +62,8 @@ import './style.css';
 // 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
 // 骨架 HTML 与开合接线在 layout.js，由下面 initLayout() 一处接好。
 import { initLayout, SIDEBAR_BREAKPOINT } from './layout.js';
+// 评审修复第 1 条：返回四层落地（纯决策与地址栏落点在 navigation.js，DOM 接线在本文件）
+import { CLOSE_NOTE_HREF, backDirective } from './navigation.js';
 import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
 // 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
@@ -836,10 +838,21 @@ function render() {
   else renderList();
 }
 
-// 「返回」回到这篇笔记**所在的目录**，不是回到根。从深目录点进来，再退回根，
-// 等于每看一篇都要重新走一遍路径。
-function backHref() {
-  return '#/dir/' + encodeURIComponent(dirOf(state.path));
+/**
+ * 关掉这篇（评审修复第 1 条）：界面「‹ 返回」与系统返回共用这一处。
+ * 右侧回空状态、地址栏回根、侧栏按定稿保持（不强行关）。
+ * 不新增历史：用 replaceState 把「当前这一条」钉成根 —— 不用 location.hash=
+ * （会 push 一条，点完再按系统返回那篇又打开一次，design-brief 附录 B 第 513 行
+ * 点名的毛病），也不用 history.back()（系统返回时浏览器已自行回退一条，再叠一次
+ * 就退两层 / 制造「按了没反应」）。旧规矩「返回＝回目录」整条作废。
+ */
+function closeNote(href) {
+  state.view = 'list';
+  state.readState = null;
+  try {
+    history.replaceState(history.state, '', location.pathname + location.search + (href || CLOSE_NOTE_HREF));
+  } catch (_) { /* 老环境忽略 */ }
+  showEmptyState();
 }
 
 function crumbs(path) {
@@ -1376,7 +1389,7 @@ function renderEditor() {
   const actionsHost = document.getElementById('edit-actions');
 
   if (state.mode === 'conflict') {
-    // C-4：左上「返回」退回编辑态（草稿原样、不加提示），不再是 backHref() 回目录。
+    // C-4：左上「返回」退回编辑态（草稿原样、不加提示），不回目录。
     app.innerHTML =
       '<header class="bar"><button class="back" id="conflict-back">‹ 返回</button><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
       '<main class="editor-body">' + renderConflict() + '</main>' +
@@ -1411,11 +1424,12 @@ function renderEditor() {
   // is-disabled 类同步到 #btn-more；点开后的三个动作置灰与「先保存或取消，再改文件」
   // 锁提示走 renderOps() / [data-op]（#65/#66 同一口径），不另造一套锁判定。
 
-  // 阅读态左上仍是「‹ 返回」（#61 的落地语义）；编辑态换成「退出编辑」——
-  // 手机上左上角那颗是回阅读态，不是「关掉这篇」，返回永远只退一层。
+  // 阅读态左上「‹ 返回」＝关掉这篇（评审修复第 1 条：与系统返回共用 closeNote()，
+  // 不再用 href 跳回所在目录、也不新增历史）；编辑态换成「退出编辑」——手机上
+  // 左上角那颗是回阅读态，不是「关掉这篇」，返回永远只退一层。
   const back = state.mode === 'edit'
     ? '<button class="back" id="exit-edit-btn">‹ 退出编辑</button>'
-    : '<a class="back" href="' + backHref() + '">‹ 返回</a>';
+    : '<button class="back" id="close-note-btn">‹ 返回</button>';
 
   app.innerHTML =
     '<header class="bar">' + back + '<span class="title">' + esc(name) + '</span></header>' +
@@ -1438,6 +1452,8 @@ function renderEditor() {
   if (cb) cb.addEventListener('click', exitEdit); // #65：有改动先问「放弃改动？」
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
+  const cnb = document.getElementById('close-note-btn');
+  if (cnb) cnb.addEventListener('click', () => closeNote(CLOSE_NOTE_HREF)); // 评审修复第 1 条：界面「‹ 返回」＝关掉这篇
   wireDialog();
 }
 
@@ -1969,11 +1985,19 @@ function conflictBackToEdit() {
 }
 
 /** 系统返回 / 界面返回（layout.js 派发 ui:back）：按真实 mode 每次退一层。
-    layout 自己的 navState.mode 未必同步，这里不读它的 decision，只读 main 的 state。 */
+    评审修复第 1 条：四层落地指令在 navigation.js 的 backDirective()（可单测），
+    这里按 main 的真实 state.mode 判，不读 layout 的 detail.decision（它自己的
+    navState.mode 未必同步）。侧栏开着那一层由 layout 的 popstate 自己先收，
+    派发到这里时侧栏已收起，故只传 sidebarOpen:false，让指令判剩下三层。 */
 document.addEventListener('ui:back', () => {
-  if (state.mode === 'conflict') { conflictBackToEdit(); return; }
-  if (state.mode === 'edit') { exitEdit(); return; }
-  // 阅读态「关掉这篇」归 #61 的返回语义（hash 随系统返回变化），本票不抢。
+  // 空状态 / 阅读失败态时 openedPath 传空，避免按系统返回也 replace 一次。
+  const openedPath = (state.view === 'editor' && !state.emptyActive && !state.readState)
+    ? state.path : '';
+  const d = backDirective({ mode: state.mode, openedPath, sidebarOpen: false });
+  if (d.decision === 'conflict-to-edit') { conflictBackToEdit(); return; }
+  if (d.decision === 'exit-edit') { exitEdit(); return; }
+  if (d.decision === 'close-note') { closeNote(d.href); return; }
+  // 'none'（空状态 / 没打开笔记）：不再退，也不制造「按了没反应」的假象。
 });
 
 /**

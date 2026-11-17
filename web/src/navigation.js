@@ -117,3 +117,30 @@ export function resolveLanding({ hash = '', exists = () => true, online = true }
   // 逐级上退都没找到，落到仓库根，仍把那句话说出来
   return { kind: 'dir', path: '', message: '这个目录不在了，已上退到这里', sidebarOpen: false };
 }
+
+/* ---------- 评审修复第 1 条：返回四层真正落地 ---------------------------------
+   旧规矩「返回＝回到这篇所在的目录」整条作废（design-brief §7 第 408 行 /
+   附录 B 第 513 行）。「关掉这篇」＝右侧回空状态 + 地址栏回根 + 不新增历史。
+   纯决策与落地指令在这里（可单测），DOM 接线在 main.js / layout.js。 */
+
+/** 「关掉这篇」后地址栏落点：仓库根。绝不指向 dirOf(path) 那个目录。 */
+export const CLOSE_NOTE_HREF = noteHref('');
+
+/**
+ * 返回四层的落地指令（供 main.js 的 ui:back 接线用）。
+ * 判据是调用方传进来的真实 mode / openedPath / sidebarOpen —— #65 提醒过
+ * layout 自己的 navState.mode 未必同步，别拿它的 decision 当真相。
+ *  - close-sidebar：侧栏开着先收侧栏，由 layout 的 popstate 自己处理；
+ *  - conflict-to-edit / exit-edit：沿用 #65 的 conflictBackToEdit() / exitEdit()；
+ *  - close-note：href 恒为 CLOSE_NOTE_HREF（根）。historyOp='replace' 要调用方用
+ *    replaceState 把「当前这一条」钉成根：不 push（点完按系统返回不会又打开这篇）、
+ *    不 back（系统返回时浏览器已自行回退一条，再叠一次就退两层）。
+ */
+export function backDirective(state) {
+  const decision = decideBack(state);
+  return {
+    decision,
+    href: decision === 'close-note' ? CLOSE_NOTE_HREF : '',
+    historyOp: decision === 'close-note' ? 'replace' : 'none',
+  };
+}

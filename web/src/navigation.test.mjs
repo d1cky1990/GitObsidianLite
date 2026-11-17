@@ -12,7 +12,7 @@ import {
   getOpenedPath, setOpenedPath, getEditingPath, setEditingPath,
   createTarget, noteHref, parseHash,
   pushSidebarPlaceholder, popSidebarPlaceholder,
-  decideBack, resolveLanding,
+  decideBack, resolveLanding, CLOSE_NOTE_HREF, backDirective,
 } from './navigation.js';
 
 test('三个词各自独立：改一个不串到另两个', () => {
@@ -124,4 +124,40 @@ test('链接落地：断网说「连不上」，不许说「找不到」', () =>
   assert.ok(r.message.includes('连不上'));
   assert.ok(!r.message.includes('找不到'));
   assert.ok(!r.message.includes('没有'));
+});
+
+/* ---------- 评审修复第 1 条：返回四层落地 +「不再指向目录」 ---------- */
+
+test('评审修复第1条：返回四层落地指令，close-note 地址栏恒回根、绝不指向所在目录', () => {
+  assert.equal(CLOSE_NOTE_HREF, '#/');
+  assert.equal(CLOSE_NOTE_HREF, noteHref(''));
+  assert.ok(!CLOSE_NOTE_HREF.includes('/dir/'), '不再指向目录');
+
+  const s = createNavState();
+  setOpenedPath(s, '日记/2026/a.md');
+
+  s.sidebarOpen = true; s.mode = 'conflict';
+  let d = backDirective(s);
+  assert.equal(d.decision, 'close-sidebar', '侧栏开着先收侧栏（layout 负责）');
+  assert.equal(d.href, '');
+  assert.equal(d.historyOp, 'none');
+
+  s.sidebarOpen = false; s.mode = 'conflict';
+  assert.equal(backDirective(s).decision, 'conflict-to-edit');
+
+  s.mode = 'edit';
+  assert.equal(backDirective(s).decision, 'exit-edit');
+
+  s.mode = 'read';
+  d = backDirective(s);
+  assert.equal(d.decision, 'close-note');
+  assert.equal(d.href, '#/', '关掉这篇＝地址栏回根');
+  assert.ok(!d.href.includes('/dir/'), '不再指向任何 /dir/ 目录');
+  assert.ok(!d.href.includes('日记/2026'), '不再指向这篇所在目录（旧规矩作废）');
+  assert.equal(d.historyOp, 'replace', '用 replaceState：不 push、不叠加一次 history.back');
+
+  setOpenedPath(s, '');
+  d = backDirective(s);
+  assert.equal(d.decision, 'none');
+  assert.equal(d.historyOp, 'none');
 });
