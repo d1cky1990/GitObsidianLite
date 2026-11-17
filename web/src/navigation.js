@@ -144,3 +144,34 @@ export function backDirective(state) {
     historyOp: decision === 'close-note' ? 'replace' : 'none',
   };
 }
+
+/* ---------- 评审修复第 2 条：旧目录链接落地的接线层判定 ----------------------
+   F-13：分享链接落阅读态；旧目录链接那一级不在了就逐级上退；断网说「连不上」。
+   F-14：同一个原因四处说法一致，「问不到」不许说成「找不到」、不许冒充「不在了」。
+   存在性判定只用内存里那份全库名单（ensureIndex 的 notePaths），
+   **不为一个落地判定新增网络请求**；名单没到＝问不到。 */
+
+/**
+ * 用内存全库名单判某一级目录在不在：任一笔记路径以 `dir + '/'` 开头即算在。
+ *  - 空 dir ＝仓库根，恒为在（不算「不在了」，不谎报上退）；
+ *  - notePaths 不是数组（名单还没到 / 拉不到）→ undefined＝「问不到」，
+ *    由调用方按 offline 分支说「连不上」，绝不谎报上退。
+ */
+export function indexDirExists(notePaths, dir) {
+  if (!Array.isArray(notePaths)) return undefined;
+  if (!dir) return true;
+  const prefix = String(dir).replace(/\/+$/, '') + '/';
+  return notePaths.some((p) => typeof p === 'string' && p.startsWith(prefix));
+}
+
+/**
+ * 注入 resolveLanding 的 { online, exists } 判定器（纯函数，接线层可单测）。
+ * online＝名单是否到手：没到 / 拉不到＝问不到（resolveLanding 直接给 offline
+ * 「连不上」），绝不谎报上退；到手后才用 exists 逐级判「确实不在」。
+ */
+export function landingProbeFromIndex(notePaths) {
+  return {
+    online: Array.isArray(notePaths),
+    exists: (dir) => indexDirExists(notePaths, dir) === true,
+  };
+}

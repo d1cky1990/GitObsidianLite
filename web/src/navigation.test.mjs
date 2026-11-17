@@ -13,6 +13,7 @@ import {
   createTarget, noteHref, parseHash,
   pushSidebarPlaceholder, popSidebarPlaceholder,
   decideBack, resolveLanding, CLOSE_NOTE_HREF, backDirective,
+  indexDirExists, landingProbeFromIndex,
 } from './navigation.js';
 
 test('三个词各自独立：改一个不串到另两个', () => {
@@ -160,4 +161,51 @@ test('评审修复第1条：返回四层落地指令，close-note 地址栏恒�
   d = backDirective(s);
   assert.equal(d.decision, 'none');
   assert.equal(d.historyOp, 'none');
+});
+
+/* ---------- 评审修复第 2 条：旧目录链接落地的接线层判定（存在性 / 问不到） ---------- */
+
+test('评审修复第2条：indexDirExists 只用内存全库名单判目录在不在，名单没到＝问不到', () => {
+  const paths = ['日记/2026/05-14.md', '日记/2026/05-15.md', 'a.md'];
+  assert.equal(indexDirExists(paths, '日记'), true);
+  assert.equal(indexDirExists(paths, '日记/2026'), true);
+  assert.equal(indexDirExists(paths, '日记/2026/已删'), false, '这一级确实不在');
+  assert.equal(indexDirExists(paths, ''), true, '仓库根恒在，不算「不在了」，不谎报上退');
+  assert.equal(indexDirExists(paths, '不存在'), false);
+  // 名单没到 / 拉不到：返回 undefined＝问不到，调用方按「连不上」处理，绝不谎报上退
+  assert.equal(indexDirExists(null, '日记'), undefined);
+  assert.equal(indexDirExists(undefined, '日记'), undefined);
+  assert.equal(indexDirExists('bad', '日记'), undefined);
+});
+
+test('评审修复第2条：landingProbeFromIndex 把「确实不在」与「问不到」分开', () => {
+  const probe = landingProbeFromIndex(['日记/2026/a.md']);
+  assert.equal(probe.online, true, '名单到手＝能问');
+  assert.equal(probe.exists('日记/2026'), true);
+  assert.equal(probe.exists('日记/2026/已删'), false);
+
+  const unknown = landingProbeFromIndex(null);
+  assert.equal(unknown.online, false, '名单没到＝问不到，不许冒充不在了');
+  assert.equal(unknown.exists('日记/2026'), false);
+});
+
+test('评审修复第2条：resolveLanding 接上名单判定——不在逐级上退说那句话，问不到说「连不上」', () => {
+  const { online, exists } = landingProbeFromIndex(['日记/2026/a.md']);
+  const r = resolveLanding({
+    hash: '#/dir/' + encodeURIComponent('日记/2026/已删/更深'),
+    exists, online,
+  });
+  assert.equal(r.kind, 'dir');
+  assert.equal(r.path, '日记/2026', '逐级上退到还在的那一级');
+  assert.ok(r.message.includes('这个目录不在了，已上退到这里'));
+
+  const { online: off, exists: ex2 } = landingProbeFromIndex(null);
+  const o = resolveLanding({
+    hash: '#/dir/' + encodeURIComponent('日记/2026/已删'),
+    exists: ex2, online: off,
+  });
+  assert.equal(o.kind, 'offline');
+  assert.ok(o.message.includes('连不上'), '问不到说连不上');
+  assert.ok(!o.message.includes('找不到'), '不许说找不到');
+  assert.ok(!o.message.includes('不在了'), '问不到不冒充不在了');
 });

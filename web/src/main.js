@@ -63,7 +63,7 @@ import './style.css';
 // 骨架 HTML 与开合接线在 layout.js，由下面 initLayout() 一处接好。
 import { initLayout, SIDEBAR_BREAKPOINT } from './layout.js';
 // 评审修复第 1 条：返回四层落地（纯决策与地址栏落点在 navigation.js，DOM 接线在本文件）
-import { CLOSE_NOTE_HREF, backDirective } from './navigation.js';
+import { CLOSE_NOTE_HREF, backDirective, resolveLanding, landingProbeFromIndex } from './navigation.js';
 import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
 // 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
@@ -625,20 +625,75 @@ function toast(msg, action = null) {
   }, toastDuration(action)); // #65：普通 2.5s / 带动作 8s，与 editor-guard 单测同源
 }
 
+/**
+ * 路由（评审修复第 2/3 条）：接上 navigation.js 的 resolveLanding()。
+ *  - 分享链接 /edit/ → 阅读态、侧栏关着（F-13）；
+ *  - 根 hash / 未知 hash → 右侧空状态（#64 的最近打开与四档失败态不进旧列表页）；
+ *  - 旧目录链接 /dir/ → landDirLink()：不再进 renderList() 旧整页列表，改为
+ *    侧栏选中该文件夹 + 右侧空状态，逐级上退与那句话由 resolveLanding 给。
+ */
 function navigate() {
   const hash = location.hash.slice(1) || '';
-  if (hash.startsWith('/edit/')) {
-    openFile(decodeURIComponent(hash.slice(6)));
-  } else if (hash.startsWith('/dir/')) {
-    state.view = 'list';
-    state.emptyActive = false; state.readState = null; // #64 进目录页就收起空状态 / 失败态
-    loadDir(decodeURIComponent(hash.slice(5)));
-  } else {
-    // #64：没打开笔记 → 正文区空状态。不 loadDir('')：断网时那次目录请求失败会
-    // 弹一句 toast，正是判据 3「断网时空状态不弹提示」不许的；核对由 showEmptyState 发起。
-    state.view = 'list';
-    showEmptyState();
+  if (hash.startsWith('/dir/')) { landDirLink(location.hash); return; }
+  const probe = landingProbeFromIndex(wikilinkIndex ? wikilinkIndex.notePaths : null);
+  // online 恒 true：分享链接 / 根 hash 不依赖名单，不能被「名单还没到」误判成断网
+  // （#64 判据 3：断网时空状态也不弹提示）。exists 对这两类 hash 不会被调用。
+  const landing = resolveLanding({ hash: location.hash, exists: probe.exists, online: true });
+  if (landing.kind === 'note') {
+    // F-13：分享链接落阅读态、侧栏关着。openFile() 不改 hash / 不碰侧栏；窄屏侧栏
+    // 默认关（layout initLayout 的 isWide() && !collapsed），宽屏常驻是骨架定稿
+    // G-6，不强行关。正文渲染一字不改。
+    openFile(landing.path);
+    return;
   }
+  // empty（根 hash / 未知 hash）：右侧空状态；不 loadDir('')，断网时空状态不弹提示，
+  // 最近打开的核对由 showEmptyState 发起（#64 判据 3）。
+  state.view = 'list';
+  showEmptyState();
+}
+
+/**
+ * 旧目录链接落地（评审修复第 2/3 条）。**不回 renderList() 旧整页列表**：
+ * 右侧先落空状态，侧栏按名单判出的那一级选中；message 逐字说给用户。
+ * 名单还没到时挂既有 ensureIndex 那一份 promise（不新增请求）：到手重判、
+ * 失败＝断网说「连不上」，都不谎报上退、不说「找不到」（F-13 / F-14）。
+ */
+function landDirLink(hash) {
+  state.view = 'list';
+  state.mode = 'read';   // 复位编辑/冲突锁，避免空状态下侧栏仍被 isLocked() 锁死
+  state.readState = null;
+  showEmptyState();
+  const decide = () => {
+    if (location.hash !== hash) return;   // 期间已离开这条旧链接，别覆盖用户的新操作
+    const probe = landingProbeFromIndex(wikilinkIndex ? wikilinkIndex.notePaths : null);
+    applyDirLanding(resolveLanding({ hash, exists: probe.exists, online: probe.online }));
+  };
+  if (wikilinkIndex) { decide(); return; }
+  // 复用启动预热那一份正在进行的 promise（不新增请求）；若既没到手也没在拉
+  // （上一次尝试已失败 settle），按「问不到」说连不上，不再发请求。
+  if (!wikilinkIndexPromise) {
+    showEmptyState();
+    toast('连不上');
+    return;
+  }
+  wikilinkIndexPromise.then(decide, () => {
+    if (location.hash !== hash) return;
+    showEmptyState();
+    toast('连不上');   // 断网 / 问不到，不冒充「不在了」、不谎报上退
+  });
+}
+
+/** 把 dir / offline 落地结果画出来：侧栏选中 + 右侧空状态，不进旧列表页。 */
+function applyDirLanding(landing) {
+  if (landing.kind === 'offline') {
+    showEmptyState();
+    toast(landing.message || '连不上');
+    return;
+  }
+  // dir：侧栏选中该文件夹（#62 的 setSelectedFolder / 树定位），右侧空状态。
+  try { setSelectedFolder(landing.path); } catch (_) { /* 树未接线时忽略 */ }
+  showEmptyState();
+  if (landing.message) toast(landing.message);  // 「这个目录不在了，已上退到这里」
 }
 
 async function loadDir(path) {
