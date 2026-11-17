@@ -17,6 +17,7 @@ import {
   createDialogModel, renameDialogModel, moveDialogModel, deleteDialogModel,
   renderEmphasis, dialogView, fileOpsLayerHtml, rowHasOps, shouldStartLongPress,
   NEW_TARGET_CHECK_EVENT, newNoteTargetCheckDetail,
+  opsSheetHtml, pickerHtml, foldersOf, LONG_PRESS_MS,
 } from './file-ops-ui.js';
 
 // ---------------------------------------------------------------------------
@@ -279,4 +280,82 @@ test('撞名：拒绝文案逐字，模型不带「自动加后缀 / 二次确�
   assert.equal(m.error, '这个名字已经有了');
   assert.equal(m.autoSuffix, undefined);
   assert.equal(m.confirmAgain, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// 切片 2b：操作表 / 目录选择器的骨架（逐字文案 + 44 命中 + 内联 SVG 图标）
+// 它们没有输入框，内容可随状态重建；新建弹窗那个输入框仍只在常驻层里建一次。
+// ---------------------------------------------------------------------------
+
+test('操作表：三个动作 + 取消 + 遮罩；非编辑态不置灰、不给锁提示', () => {
+  const html = opsSheetHtml({ name: '日记.md' });
+  assert.ok(html.includes('data-op="rename"'));
+  assert.ok(html.includes('data-op="move"'));
+  assert.ok(html.includes('data-op="delete"'));
+  assert.ok(html.includes('data-act="closeOps"'));
+  assert.ok(html.includes('sheet-mask'));
+  assert.ok(html.includes('日记.md'));
+  assert.ok(!html.includes('is-disabled'));
+  assert.ok(!html.includes('op-hint'));
+});
+
+test('操作表：编辑态三动作置灰但仍能按，锁提示逐字、不靠 disabled', () => {
+  const html = opsSheetHtml({ name: 'a.md', locked: true });
+  assert.equal((html.match(/is-disabled/g) || []).length, 3, '三个动作都置灰');
+  assert.ok(html.includes('先保存或取消，再改文件'), '逐字锁提示');
+  assert.ok(!html.includes(' disabled'), '置灰不靠 disabled 属性，仍能按、按了给提示');
+  assert.ok(html.includes('class="op-hint"'));
+});
+
+test('操作表：名字转义，防 XSS', () => {
+  const html = opsSheetHtml({ name: '<img src=x>' });
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&lt;img'));
+});
+
+test('目录选择器：标题/上一级/放这里/就放这里 逐字，图标内联 SVG，只列目录', () => {
+  const html = pickerHtml({
+    dir: '日记',
+    entries: [
+      { type: 'dir', name: '2026', path: '日记/2026' },
+      { type: 'note', name: 'a.md', path: '日记/a.md' },
+    ],
+  });
+  assert.ok(html.includes('移动到…'));
+  assert.ok(html.includes('上一级'));
+  assert.ok(html.includes('放这里：日记'));
+  assert.ok(html.includes('就放这里'));
+  assert.ok(html.includes('data-enter="日记/2026"'));
+  assert.ok(!html.includes('data-enter="日记/a.md"'), '笔记行不进目录选择器');
+  assert.ok(html.includes('<svg'), '图标全内联 SVG，不用字符/emoji');
+  assert.ok(!html.includes('（没有子目录）'), '有子目录时不显示空提示');
+});
+
+test('目录选择器：根写「仓库根目录」、无子目录显示（没有子目录）、无上一级', () => {
+  const root = pickerHtml({ dir: '', entries: [] });
+  assert.ok(root.includes('（没有子目录）'));
+  assert.ok(root.includes('放这里：仓库根目录'));
+  assert.ok(!root.includes('上一级'), '根目录没有上一级');
+});
+
+test('目录选择器：忙时禁用「就放这里」并说加载中，不谎称没子目录；错误逐字显示', () => {
+  const busy = pickerHtml({ dir: 'x', entries: [], busy: true });
+  assert.ok(busy.includes('加载中…'));
+  assert.ok(busy.includes('is-disabled'));
+  assert.ok(!busy.includes('（没有子目录）'), '还在读时不冒充空目录');
+
+  const err = pickerHtml({ dir: 'x', entries: [], error: '目录没读到：连不上' });
+  assert.ok(err.includes('目录没读到：连不上'));
+});
+
+test('foldersOf：只留目录，笔记与其它类型都不进选择器', () => {
+  assert.deepEqual(
+    foldersOf([{ type: 'dir', path: 'a' }, { type: 'note', path: 'b' }, { type: 'dir', path: 'c' }]),
+    [{ type: 'dir', path: 'a' }, { type: 'dir', path: 'c' }],
+  );
+  assert.deepEqual(foldersOf(null), []);
+});
+
+test('长按阈值：正数常量，供窄屏长按接线用（真手势留真机）', () => {
+  assert.ok(LONG_PRESS_MS > 0);
 });

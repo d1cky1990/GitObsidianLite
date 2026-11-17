@@ -334,3 +334,80 @@ export const NEW_TARGET_CHECK_EVENT = 'ui:new-note-target-check';
 export function newNoteTargetCheckDetail(target) {
   return { target: target || { mode: 'selected', dir: '' } };
 }
+
+// ---------------------------------------------------------------------------
+// 切片 2b：操作表 / 目录选择器的骨架
+//
+// 这两层没有输入框，内容可以随状态重建；**只有新建弹窗那个 #dlg-input 才常驻不换
+// 节点**（见 fileOpsLayerHtml）。逐字文案取附录 C，图标全走 icons.js 的内联 SVG。
+// ---------------------------------------------------------------------------
+
+/** 窄屏长按阈值（ms）：按下即给反馈，到点出操作表。真手势留真机验。 */
+export const LONG_PRESS_MS = 450;
+
+/** 目录选择器只列文件夹；笔记与其它类型都不进。 */
+export function foldersOf(entries) {
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && e.type === 'dir');
+}
+
+/**
+ * 「⋯」点开的操作表（笔记页与目录页同一套，正文顶栏与树行长按共用）。
+ * 编辑 / 冲突态三个动作置灰但**仍能按**：置灰用 class（不 disable），
+ * 按了给那句「先保存或取消，再改文件」由 main.js 的点击分发统一处理（与 #65 同口径）。
+ */
+export function opsSheetHtml({ name = '', locked = false, lockedHint = LOCKED_HINT } = {}) {
+  const cls = locked ? ' is-disabled' : '';
+  return [
+    '<div class="sheet-mask" data-act="closeOps"></div>',
+    '<div class="sheet auto">',
+    '  <div class="sheet-head">' + escText(name) + '</div>',
+    '  <div class="ops">',
+    '    <button class="op' + cls + '" data-op="rename">重命名</button>',
+    '    <button class="op' + cls + '" data-op="move">移动</button>',
+    '    <button class="op danger' + cls + '" data-op="delete">删除</button>',
+    '  </div>',
+    locked ? '  <div class="op-hint">' + escText(lockedHint) + '</div>' : '',
+    '  <div class="sheet-foot"><div class="sheet-row">',
+    '    <button data-act="closeOps">取消</button>',
+    '  </div></div>',
+    '</div>',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * 目录选择器：复用今天「移动笔记」那套（逐层点进去 / 上一级 / 就放这里 /「（没有子目录）」），
+ * 交互不变、形态沿用 .sheet。四句文案逐字取附录 C；实体目录由 foldersOf 过滤。
+ * 「上一级」用 chevron 内联 SVG 转向上，不用字符 / emoji。读目录忙时「就放这里」置灰，
+ * 判不了重名就不答应（main.js 的 pickerMoveHere 再兜一次）。
+ */
+export function pickerHtml({ dir = '', entries = [], busy = false, error = '' } = {}) {
+  const dirs = foldersOf(entries);
+  const up = dir
+    ? '<button class="row pick-row" data-enter="' + escText(dirOf(dir)) + '">' +
+      '<span class="fo-up-ic" aria-hidden="true">' + icon('chevron-right', 18) + '</span>' +
+      '<span class="nm">' + escText(TEXT.pickerUp) + '</span></button>'
+    : '';
+  const rows = dirs.map((d) =>
+    '<button class="row pick-row" data-enter="' + escText(d.path) + '">' +
+    '<span class="ic dir" aria-hidden="true">' + icon('folder', 18) + '</span>' +
+    '<span class="nm">' + escText(d.name) + '</span></button>').join('');
+  const empty = (!dirs.length && !busy)
+    ? '<div class="center dim">' + escText(TEXT.pickerEmpty) + '</div>'
+    : '';
+  const body = busy ? '<div class="center">加载中…</div>' : (up + rows + empty);
+  return [
+    '<div class="sheet-mask" data-act="closeDialog"></div>',
+    '<div class="sheet">',
+    '  <div class="sheet-head">' + escText(TEXT.pickerTitle) + '</div>',
+    '  <div class="pick-crumbs">' + escText(dir ? dir.split('/').join(' / ') : '根目录') + '</div>',
+    '  <div class="sheet-body pick-body">' + body + '</div>',
+    '  <div class="sheet-foot">',
+    '    <div class="pick-target">' + escText(pickerHere(dir)) + '</div>',
+    error ? '    <div class="modal-err">' + escText(error) + '</div>' : '',
+    '    <div class="sheet-row"><button data-act="closeDialog">取消</button>' +
+      '<button class="primary' + (busy ? ' is-disabled' : '') + '" data-act="moveHere">' +
+      escText(TEXT.pickerConfirm) + '</button></div>',
+    '  </div>',
+    '</div>',
+  ].filter(Boolean).join('\n');
+}
