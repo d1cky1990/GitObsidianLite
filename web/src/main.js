@@ -920,6 +920,9 @@ function syncFileOpsLayer() {
   const setText = (id, text) => { const n = byId(id); if (n) n.textContent = text; };
 
   const showModal = v.show && !state.picker; // 选目录时弹窗收起，只显示选择器
+  // 先让常驻层可见再 focus：祖先还是 display:none 时 element.focus() 不生效，
+  // 首次打开弹窗会落不到焦点（输入框聚焦是判据 4「名字输入框已聚焦」）。
+  layer.hidden = !(showModal || state.ops || state.picker);
   const mask = layer.querySelector('.fo-mask');
   if (mask) mask.hidden = !showModal;
   setHidden('fo-modal', !showModal);
@@ -948,7 +951,6 @@ function syncFileOpsLayer() {
   if (opsHost) opsHost.innerHTML = renderOps();
   const pickerHost = byId('fo-picker-host');
   if (pickerHost) pickerHost.innerHTML = renderPicker();
-  layer.hidden = !(showModal || state.ops || state.picker);
 }
 
 /** #66：浮层已迁到 body 末尾的常驻层，这里留空——避免 app.innerHTML 重画时换掉 #dlg-input。 */
