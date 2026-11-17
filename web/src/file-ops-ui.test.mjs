@@ -250,6 +250,14 @@ test('fileOpsLayerHtml：名字输入框整层只有一个且常驻，目录块�
   assert.ok(html.includes('id="fo-modal-scroll"'), '内容超出时内部滚动、标题与主动作不滚走');
 });
 
+test('弹窗骨架：标题与主动作在滚动区之外，内容超出只滚中间（判据10）', () => {
+  const html = fileOpsLayerHtml();
+  const scrollAt = html.indexOf('id="fo-modal-scroll"');
+  assert.ok(scrollAt > 0);
+  assert.ok(html.indexOf('id="fo-title"') < scrollAt, '标题在滚动区之前，不滚走');
+  assert.ok(html.indexOf('fo-modal-btns') > scrollAt, '主动作在滚动区之后，不滚走');
+});
+
 test('树行入口判定：文件夹行没有写操作、笔记行才有；长按只在窄屏笔记行起', () => {
   assert.equal(rowHasOps({ type: 'dir', name: '日记' }), false);
   assert.equal(rowHasOps({ type: 'note', name: 'a.md' }), true);

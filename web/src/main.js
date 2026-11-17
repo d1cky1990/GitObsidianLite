@@ -9,6 +9,14 @@ import {
 import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
 } from './file-names.js';
+// #66 文件操作规则层：逐字文案、弹窗模型、常驻浮层骨架、树行入口判定、核对事件。
+// 接线只在这里 import，DOM 同步与事件接线在文件末尾的 /* #66 */ 块。
+import {
+  TEXT, LOCKED_HINT, createdToast, deleteSuccess, pickerHere, classifyDirCheck,
+  createDialogModel, renameDialogModel, moveDialogModel, deleteDialogModel,
+  dialogView, fileOpsLayerHtml, shouldStartLongPress,
+  NEW_TARGET_CHECK_EVENT, newNoteTargetCheckDetail,
+} from './file-ops-ui.js';
 import { installTaskRule, toggleTaskInContent, isTaskDoneLine } from './tasks.js';
 // 勾选「先记本机、送到再划掉」（#60）：按篇聚合的待发记录、补发、粘性提示门。
 import { createPendingChecks, allowToast } from './pending-checks.js';
@@ -38,7 +46,7 @@ import './style.css';
 // 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
 // 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
 import { initLayout } from './layout.js';
-import { getSelectedFolder, initTree, selectPath, notifySidebarShown } from './tree.js';
+import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
 // 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
 import {
