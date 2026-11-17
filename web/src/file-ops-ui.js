@@ -21,6 +21,7 @@ import {
 } from './tree.js';
 import { isLocked } from './editor-guard.js';
 import { listDir, readFile, createFile, deleteFile } from './api.js';
+import { icon } from './icons.js';
 
 // 由 #63 提供：getNewNoteTarget() → { mode: 'selected' | 'fixed', dir: string }。
 // #63 的 settings.js 此刻还没落地，先用与约定一致的最小兜底让模块与单测能跑；
@@ -151,4 +152,185 @@ export function classifyDirCheck(error, entries) {
   }
   if (Array.isArray(entries)) return { kind: 'ok', entries };
   return { kind: 'unknown', text: TEXT.dirUnknown };
+}
+
+// ---------------------------------------------------------------------------
+// 切片 2：弹窗数据模型、常驻浮层骨架、树行入口判定、核对事件
+//
+// 这些是「从 DOM 抽出来的纯函数」：main.js 的 syncFileOpsLayer() 只把 dialogView()
+// 的结果机械地写到常驻节点上，不在这里碰 document。这样「新建 / 移动同形态」、
+// 「新建落点只读选中的文件夹」、「逐字文案」「撞名不改名字」都能被 node --test 钉住。
+// ---------------------------------------------------------------------------
+
+function escText(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * 附录 C 的删除正文里 `**撤销**` 是 markdown 加粗记号。常量逐字存（切片 1 的
+ * TEXT.deleteBody 与单测都钉死），界面渲染时把它转成 <b>，不把星号显示给用户；
+ * 其余字符原样并转义。只做这一处转换，绝不改写定稿字面。
+ */
+export function renderEmphasis(tpl) {
+  const s = String(tpl == null ? '' : tpl);
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    if (s.startsWith('**', i)) {
+      const end = s.indexOf('**', i + 2);
+      if (end > i + 2) {
+        out.push('<b>' + escText(s.slice(i + 2, end)) + '</b>');
+        i = end + 2;
+        continue;
+      }
+    }
+    out.push(escText(s[i]));
+    i += 1;
+  }
+  return out.join('');
+}
+
+/**
+ * 新建弹窗模型：**两块**（名字输入框 + 一个已经填好的目录）。
+ * 落点只经 resolveCreateDir(selectedFolder, target)，签名里连 openedPath 都没有，
+ * 从形状上杜绝 `某篇.md/新笔记.md`。标题 / 提示逐字取附录 C（提示里「当前目录」
+ * 已按 #51 裁决改成「选中的文件夹」）。
+ */
+export function createDialogModel({ selectedFolder = '', target, value = '', error = '' } = {}) {
+  const dir = resolveCreateDir(selectedFolder, target);
+  return {
+    type: 'prompt', action: 'create',
+    title: TEXT.createTitle,
+    hint: createHint(dir),
+    dir, showDir: true,
+    value, error, okLabel: '新建',
+  };
+}
+
+/** 重命名弹窗：只改名字、还放在原目录（提示说「还放在」），不露目录块。 */
+export function renameDialogModel({ path = '', value, error = '' } = {}) {
+  const dir = dirOf(path);
+  return {
+    type: 'prompt', action: 'rename', subject: path,
+    title: TEXT.renameTitle,
+    hint: renameHint(dir),
+    warn: renameWarn(baseOf(path)),
+    dir, showDir: false,
+    value: value != null ? value : stemOf(path),
+    error, okLabel: '改名',
+  };
+}
+
+/**
+ * 移动弹窗：**与新建弹窗同一个形态**（名字 + 已填好的目录，目录就在弹窗里改）。
+ * 标题复用附录 C 目录选择器那句「移动到…」，hint 留空——不新造附录 C 之外的文案。
+ */
+export function moveDialogModel({ path = '', value, error = '' } = {}) {
+  return {
+    type: 'prompt', action: 'move', subject: path,
+    title: TEXT.pickerTitle,
+    hint: '',
+    dir: dirOf(path), showDir: true,
+    value: value != null ? value : stemOf(path),
+    error, okLabel: '移动',
+  };
+}
+
+/** 删除确认弹窗：标题与正文逐字照抄（**撤销** 交给 renderEmphasis 转加粗）。 */
+export function deleteDialogModel({ path = '' } = {}) {
+  return {
+    type: 'confirm', action: 'delete', subject: path,
+    title: deleteTitle(baseOf(path)),
+    body: renderEmphasis(TEXT.deleteBody),
+    okLabel: '删除', danger: true,
+  };
+}
+
+/**
+ * 弹窗各常驻节点的「显隐 + 文本」纯数据。syncFileOpsLayer() 只把它机械写到 DOM，
+ * 不在这里碰 document；#dlg-input 的 value 只在 fresh（新打开）时设一次，之后
+ * 重画绝不覆盖，中文拼音组字不中断、撞名拒绝也不把名字改掉。
+ */
+export function dialogView(d) {
+  if (!d) return { show: false };
+  const isPrompt = d.type === 'prompt';
+  return {
+    show: true,
+    isPrompt,
+    title: d.title || '',
+    hint: d.hint || '',
+    showHint: !!d.hint,
+    warn: d.warn || '',
+    showWarn: !!d.warn,
+    bodyHtml: d.body || '',
+    showBody: !isPrompt,
+    showInput: isPrompt,
+    showDir: isPrompt && d.showDir === true,
+    dirLabel: dirLabel(d.dir || ''),
+    error: d.error || '',
+    okLabel: d.okLabel || '确定',
+    okAct: isPrompt ? 'submitDialog' : 'confirmDialog',
+    okClass: d.danger ? 'danger' : 'primary',
+    fresh: !!d.__fresh,
+    value: d.value || '',
+  };
+}
+
+export const DIALOG_INPUT_ID = 'dlg-input';
+
+/**
+ * 文件操作的常驻浮层骨架（一次性注入 body，之后只切 hidden / 改文本，绝不重建）。
+ * **#dlg-input 整层只建一次**：新建 / 移动 / 重命名 / 删除共用同一个输入节点，
+ * 重画只切 hidden，中文输入法正在组字时节点不会被换掉（§6 第 1 条）。
+ * 弹窗里目录块 data-act="pickDir" 就地打开目录选择器，不另设二级入口。
+ * 操作表 / 目录选择器各自一个宿主：它们没有输入框，内容可随状态重建。
+ */
+export function fileOpsLayerHtml() {
+  return [
+    '<div id="file-ops-layer" hidden>',
+    '  <div class="modal-mask fo-mask" data-act="closeDialog" hidden></div>',
+    '  <div class="modal fo-modal" id="fo-modal" hidden>',
+    '    <div class="fo-modal-scroll" id="fo-modal-scroll">',
+    '      <div class="modal-title" id="fo-title"></div>',
+    '      <div class="modal-hint" id="fo-hint" hidden></div>',
+    '      <input id="dlg-input" class="dlg-input" type="text" autocapitalize="off" autocomplete="off" spellcheck="false">',
+    '      <button class="fo-dir-row" id="fo-dir" data-act="pickDir" type="button" hidden>',
+    '        <span class="fo-dir-ic" aria-hidden="true">' + icon('folder', 18) + '</span>',
+    '        <span class="fo-dir-label" id="fo-dir-label"></span>',
+    '        <span class="fo-dir-chevron" aria-hidden="true">' + icon('chevron-right', 18) + '</span>',
+    '      </button>',
+    '      <div class="modal-warn" id="fo-warn" hidden></div>',
+    '      <div class="modal-body" id="fo-body" hidden></div>',
+    '      <div class="modal-err" id="fo-err"></div>',
+    '    </div>',
+    '    <div class="modal-btns fo-modal-btns">',
+    '      <button id="fo-cancel" data-act="closeDialog" type="button">取消</button>',
+    '      <button id="fo-ok" class="primary" type="button">确定</button>',
+    '    </div>',
+    '  </div>',
+    '  <div id="fo-ops-host"></div>',
+    '  <div id="fo-picker-host"></div>',
+    '</div>',
+  ].join('\n');
+}
+
+/** 一条树行有没有写操作：复用切片 1 的 opsForRow（文件夹行没有改名/移动/删除）。 */
+export function rowHasOps(entry) {
+  return opsForRow(entry).length > 0;
+}
+
+/** 长按只在「窄屏 + 笔记行」起：宽屏走悬停、文件夹行不响应长按。 */
+export function shouldStartLongPress({ isNoteRow = false, wide = false } = {}) {
+  return !wide && !!isNoteRow;
+}
+
+/**
+ * 打开新建弹窗那一刻要派发的核对事件（#63 的 initSettings 已监听）。
+ * 事件名与 detail 结构按 settings.js 的约定，绝不另造一套；断网由 #63 说「连不上」。
+ */
+export const NEW_TARGET_CHECK_EVENT = 'ui:new-note-target-check';
+export function newNoteTargetCheckDetail(target) {
+  return { target: target || { mode: 'selected', dir: '' } };
 }

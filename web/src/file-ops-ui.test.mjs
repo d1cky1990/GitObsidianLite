@@ -14,6 +14,9 @@ import {
   dirLabel, resolveCreateDir, createHint, renameHint, renameWarn,
   deleteTitle, deleteSuccess, createdToast, pickerHere,
   opsForRow, classifyDirCheck,
+  createDialogModel, renameDialogModel, moveDialogModel, deleteDialogModel,
+  renderEmphasis, dialogView, fileOpsLayerHtml, rowHasOps, shouldStartLongPress,
+  NEW_TARGET_CHECK_EVENT, newNoteTargetCheckDetail,
 } from './file-ops-ui.js';
 
 // ---------------------------------------------------------------------------
@@ -133,4 +136,139 @@ test('核对成功：拿到目录名单就是 ok，不带失败文案', () => {
   assert.equal(ok.text, undefined);
   // 既没报错也没给名单 → 还没问到，不假装成功
   assert.equal(classifyDirCheck(null, undefined).kind, 'unknown');
+});
+
+// ---------------------------------------------------------------------------
+// 切片 2：弹窗模型（新建 / 移动同形态、目录就在弹窗里改）、常驻浮层骨架、
+// 树行入口判定、打开弹窗那一刻的核对事件。DOM 接线 / 命中区 / 真输入法留真浏览器。
+// ---------------------------------------------------------------------------
+
+test('新建弹窗模型：两块（名字 + 已填目录），落点只读选中的文件夹，文案逐字', () => {
+  const m = createDialogModel({ selectedFolder: '日记/2026' });
+  assert.equal(m.action, 'create');
+  assert.equal(m.type, 'prompt');
+  assert.equal(m.title, '新建笔记');
+  assert.equal(m.hint, '放在 日记/2026。只填名字，路径由选中的文件夹决定。');
+  assert.equal(m.showDir, true);
+  assert.equal(m.dir, '日记/2026');
+  assert.equal(m.value, '');
+});
+
+test('新建弹窗：没选中文件夹 → 落仓库根，提示仍逐字带「选中的文件夹」', () => {
+  const m = createDialogModel({ selectedFolder: '' });
+  assert.equal(m.dir, '');
+  assert.equal(m.hint, '放在 仓库根目录。只填名字，路径由选中的文件夹决定。');
+});
+
+test('新建落点：selected 档按选中文件夹、fixed 档按指定目录，与「打开的那篇」无关', () => {
+  assert.equal(createDialogModel({
+    selectedFolder: '日记', target: { mode: 'selected', dir: '' },
+  }).dir, '日记');
+  assert.equal(createDialogModel({
+    selectedFolder: '日记', target: { mode: 'fixed', dir: '收集箱' },
+  }).dir, '收集箱');
+  assert.equal(createDialogModel({}).dir, '');
+  // 硬塞 openedPath 也不读它 —— 从形状上杜绝 某篇.md/新笔记.md
+  assert.equal(createDialogModel({ selectedFolder: '日记', openedPath: '某篇.md' }).dir, '日记');
+});
+
+test('移动弹窗与新建弹窗同一形态：名字 + 已填目录；标题复用附录 C 已定字面、不新造', () => {
+  const m = moveDialogModel({ path: '日记/2026/a.md' });
+  assert.equal(m.action, 'move');
+  assert.equal(m.type, 'prompt');
+  assert.equal(m.showDir, true);   // 与新建同形态：目录也在弹窗里改
+  assert.equal(m.dir, '日记/2026');
+  assert.equal(m.value, 'a');
+  assert.equal(m.title, '移动到…');  // TEXT.pickerTitle，逐字
+  assert.equal(m.hint, '');          // 不新造附录 C 之外的文案
+});
+
+test('重命名弹窗：只改名字、还放在原目录，警告逐字，不露目录块', () => {
+  const m = renameDialogModel({ path: '日记/a.md' });
+  assert.equal(m.action, 'rename');
+  assert.equal(m.showDir, false);   // 提示说「还放在」，不改目录
+  assert.equal(m.dir, '日记');
+  assert.equal(m.hint, '只改名字，还放在 日记。');
+  assert.equal(m.value, 'a');
+  assert.equal(
+    m.warn,
+    '别的笔记里指向「a.md」的链接会断——本端只认得文件名，读不到别的笔记的正文，改不了那些链接，也报不出断了几条。',
+  );
+});
+
+test('删除确认弹窗：标题与正文逐字（**撤销** 转加粗，界面不显示星号）', () => {
+  const m = deleteDialogModel({ path: '日记/a.md' });
+  assert.equal(m.action, 'delete');
+  assert.equal(m.type, 'confirm');
+  assert.equal(m.title, '删除「a.md」？');
+  assert.ok(m.body.includes('<b>撤销</b>'));
+  assert.ok(!m.body.includes('**'), '界面不显示 markdown 星号');
+  assert.equal(m.danger, true);
+});
+
+test('renderEmphasis：只把 **…** 转成 <b>，其余原样并转义 HTML', () => {
+  assert.equal(renderEmphasis('会给一次**撤销**'), '会给一次<b>撤销</b>');
+  assert.equal(renderEmphasis('a < b'), 'a &lt; b');
+  assert.equal(renderEmphasis(' plain '), ' plain ');
+});
+
+test('dialogView：新建/移动露目录块与输入框、重命名不露目录、删除走 confirmDialog + danger', () => {
+  const c = dialogView(createDialogModel({ selectedFolder: '日记' }));
+  assert.equal(c.show, true);
+  assert.equal(c.showDir, true);
+  assert.equal(c.showInput, true);
+  assert.equal(c.okAct, 'submitDialog');
+  assert.equal(c.dirLabel, '日记');
+
+  const mv = dialogView(moveDialogModel({ path: 'x/a.md' }));
+  assert.equal(mv.showDir, true);
+  assert.equal(mv.showInput, true);
+  assert.equal(mv.okAct, 'submitDialog');
+
+  const rn = dialogView(renameDialogModel({ path: 'x/a.md' }));
+  assert.equal(rn.showDir, false);
+  assert.equal(rn.showWarn, true);
+  assert.equal(rn.showInput, true);
+
+  const dl = dialogView(deleteDialogModel({ path: 'x/a.md' }));
+  assert.equal(dl.showBody, true);
+  assert.equal(dl.showInput, false);
+  assert.equal(dl.okAct, 'confirmDialog');
+  assert.equal(dl.okClass, 'danger');
+
+  assert.equal(dialogView(null).show, false);
+});
+
+test('fileOpsLayerHtml：名字输入框整层只有一个且常驻，目录块可点，操作表/选择器各有宿主', () => {
+  const html = fileOpsLayerHtml();
+  assert.equal((html.match(/id="dlg-input"/g) || []).length, 1, '#dlg-input 只建一次，重画不换节点');
+  assert.ok(html.includes('id="fo-modal"'));
+  assert.ok(html.includes('data-act="pickDir"'), '目录就在弹窗里改，不另设二级入口');
+  assert.ok(html.includes('data-act="closeDialog"'));
+  assert.ok(html.includes('id="fo-ops-host"'));
+  assert.ok(html.includes('id="fo-picker-host"'));
+  assert.ok(html.includes('id="fo-modal-scroll"'), '内容超出时内部滚动、标题与主动作不滚走');
+});
+
+test('树行入口判定：文件夹行没有写操作、笔记行才有；长按只在窄屏笔记行起', () => {
+  assert.equal(rowHasOps({ type: 'dir', name: '日记' }), false);
+  assert.equal(rowHasOps({ type: 'note', name: 'a.md' }), true);
+  assert.equal(shouldStartLongPress({ isNoteRow: true, wide: false }), true);
+  assert.equal(shouldStartLongPress({ isNoteRow: true, wide: true }), false);   // 宽屏走悬停
+  assert.equal(shouldStartLongPress({ isNoteRow: false, wide: false }), false); // 长按文件夹行无反应
+});
+
+test('打开新建弹窗那一刻的核对事件：事件名与 detail 按 #63 约定', () => {
+  assert.equal(NEW_TARGET_CHECK_EVENT, 'ui:new-note-target-check');
+  assert.deepEqual(newNoteTargetCheckDetail({ mode: 'fixed', dir: '收集箱' }),
+    { target: { mode: 'fixed', dir: '收集箱' } });
+  assert.deepEqual(newNoteTargetCheckDetail(undefined), { target: { mode: 'selected', dir: '' } });
+});
+
+test('撞名：拒绝文案逐字，模型不带「自动加后缀 / 二次确认」字段', () => {
+  const m = createDialogModel({ selectedFolder: '' });
+  m.error = TEXT.duplicate;
+  assert.equal(m.error, '这个名字已经有了');
+  assert.equal(m.autoSuffix, undefined);
+  assert.equal(m.confirmAgain, undefined);
 });
