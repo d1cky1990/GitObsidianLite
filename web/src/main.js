@@ -574,7 +574,7 @@ const state = {
   openedPath: '', // 打开的那篇（address bar 只跟它走）
   editingPath: '', // 正在编辑的那篇（编辑 / 冲突态）
   sidebarOpen: false, // 侧栏开合（窄屏滑出 / 宽屏收起）
-  entries: [],
+  entries: [], // 旧整页列表页遗留；仅保留的 renderList() 读取，路由改动后主路径不再写入
   file: null, // { path, sha, content }
   mode: 'read', // 'read' | 'edit' | 'conflict'
   draft: '',
@@ -646,7 +646,7 @@ function navigate() {
     openFile(landing.path);
     return;
   }
-  // empty（根 hash / 未知 hash）：右侧空状态；不 loadDir('')，断网时空状态不弹提示，
+  // empty（根 hash / 未知 hash）：直接落右侧空状态，不加载旧整页目录列表；断网时空状态不弹提示，
   // 最近打开的核对由 showEmptyState 发起（#64 判据 3）。
   state.view = 'list';
   showEmptyState();
@@ -696,16 +696,6 @@ function applyDirLanding(landing) {
   if (landing.message) toast(landing.message);  // 「这个目录不在了，已上退到这里」
 }
 
-async function loadDir(path) {
-  // 进新目录时把浮层收掉（操作表/弹窗是针对上一屏的东西），但**不清 message**：
-  // 删除后的「撤销」就挂在提示条上，翻页把它收走等于把撤销入口也收走了。
-  closeOverlays();
-  state.busy = true; render();
-  try { state.entries = await listDir(path); state.path = path; }
-  catch (e) { state.entries = []; toast(e.message); }
-  state.busy = false; resetFab(); render();
-}
-
 async function openFile(path) {
   closeOverlays();
   // 换了一篇就把上一处搜索命中丢掉；同一条路径则是刚从结果里点进来的，留着给下面用
@@ -747,13 +737,6 @@ async function openFile(path) {
   }
   render();
   if (state.view === 'editor' && state.pendingHit && !state.readState) applyPendingHit();
-}
-
-/** 打开某目录（走 hash 路由，好让返回键能用）。 */
-function gotoDir(dir) {
-  const target = '#/dir/' + encodeURIComponent(dir);
-  if (location.hash === target) loadDir(dir);
-  else location.hash = target; // hashchange → navigate → loadDir
 }
 
 // #60：从编辑 / 冲突态「回到阅读态」的统一落点。退出编辑这一刻就补发那篇没送到的
@@ -890,7 +873,7 @@ function render() {
   if (state.readState) { renderReadState(); return; }
   if (state.emptyActive && state.view !== 'editor') { renderEmptyState(); return; }
   if (state.view === 'editor') renderEditor();
-  else renderList();
+  else showEmptyState(); // 评审修复收尾：不该出现的 view 一律落空状态，不再掉回 renderList() 旧整页列表
 }
 
 /**
