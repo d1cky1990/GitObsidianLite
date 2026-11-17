@@ -10,7 +10,9 @@ import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
 } from './file-names.js';
 // #66 文件操作规则层：逐字文案、弹窗模型、常驻浮层骨架、树行入口判定、核对事件。
-// 接线只在这里 import，DOM 同步与事件接线在文件末尾的 /* #66 */ 块。
+// 规则层在独立模块；但本文件仍有 #66 的接线与改造——文件开头的
+// mountFileOpsLayer() IIFE 是一次性常驻浮层注入，submitDialog / doCreate /
+// doDelete 等既有函数被就地改写，末尾 /* #66 */ 块是事件接线，详见下方骨架总注释。
 import {
   TEXT, createdToast, deleteSuccess, createHint,
   createDialogModel, renameDialogModel, moveDialogModel, deleteDialogModel,
@@ -37,16 +39,28 @@ import { installFrontmatterRule } from './frontmatter.js';
 import { searchTitles, normalizeQuery } from './search.js';
 import './style.css';
 
-// ---- #61 一屏两栏骨架 ----------------------------------------------------
-// main.js 只做 import 与一处接线（handoff「降低合并冲突的模块边界」）。新逻辑
-// 都在独立模块里，每票各改自己的文件，不在这个文件里堆实现。
+// ---- #61 一屏两栏骨架，以及后续票在本文件留下的接线与改造 ------------------
+// 模块边界仍主张「新逻辑优先放独立模块」（handoff「降低合并冲突的模块边界」），
+// 但本文件**并不是**「只做 import 与一处接线」——后续各票在这里留下了三类东西：
+//   1. 一次性常驻浮层注入：文件开头的 mountFileOpsLayer() IIFE（#66），把
+//      #dlg-input 等常驻节点挂到 body 末尾，此后只切 hidden / 改文本，绝不重建。
+//   2. 既有动作的接线与改造：submitDialog / doCreate / doDelete / relocate 等
+//      既有函数被就地改写（#66）；进编辑 / 冲突的 UI 意图接到 editor-guard（#65）；
+//      空状态与最近打开（#64）、侧栏搜索与设置（#63）、树（#62）各在文件末尾有
+//      自己的 /* #NN */ 接线块。这些改动落在本文件的函数体里，不是搬去独立模块。
+//   3. 各模块 import，以及 render() 开头调用的 syncFileOpsLayer()（#66 常浮层同步）。
+// 文件不重排、不全文件格式化；各票接线块并存，按函数名与 /* #NN */ 注释定位。
+// 硬约束（别踩）：骨架只建一次（mountShell 幂等），所有输入框节点（侧栏搜索框、
+// 编辑区、弹窗 #dlg-input）自始至终不替换，「有 / 没有」只切 hidden —— 中文输入法
+// 组字时换掉输入节点会当场断掉。作者样式里的 display 会盖掉默认 [hidden]，
+// style.css 已补 !important。
 // 三个契约模块（导出名固定，后续票按同一接口填充，不另造一套）：
 //   theme.js        → getThemePreference / setThemePreference / applyTheme（由 layout.js 接）
 //   tree.js         → buildTree / sortEntries / refreshTree / getSelectedFolder /
-//                     setSelectedFolder / selectPath（占位，#62 填充）
-//   editor-guard.js → isLocked / guardExitEdit（占位，#65 填充）
+//                     setSelectedFolder / selectPath（#62 填充）
+//   editor-guard.js → isLocked / guardExitEdit（#65 填充）
 // 自绘图标、三个词状态、地址栏/返回/落地语义分别在 icons.js / navigation.js，
-// 骨架 HTML 与开合接线在 layout.js，全部由下面 initLayout() 一处接好。
+// 骨架 HTML 与开合接线在 layout.js，由下面 initLayout() 一处接好。
 import { initLayout, SIDEBAR_BREAKPOINT } from './layout.js';
 import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
@@ -60,7 +74,9 @@ import {
 } from './render-states.js';
 // #65 编辑态与冲突：锁死侧栏 / 未保存保护 / 进编辑读远端 / 保存失败分类 /
 // 提示条时长 / 冲突链条，规则都在 editor-guard.js；可见视口接线在 viewport.js。
-// main.js 只做 import 与末尾一处接线，不重排、不改别人函数里的代码。
+// 本处只做 import；UI 接线在末尾 /* #65 */ 块（syncEditorChrome / exitEdit /
+// conflictBackToEdit / ui:back 等），与上方总注释所述「一次性注入、既有动作改造」
+// 一并看，不重排文件、不把既有实现搬走。
 import {
   isLocked, guardExitEdit, configureEditorGuard, hasUnsavedChanges,
   classifyEditRead, classifySaveError, toastDuration,
