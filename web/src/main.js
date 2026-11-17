@@ -357,7 +357,7 @@ async function checkOnline() {
 function resultRow(r) {
   return '<a class="res" href="#/edit/' + encodeURIComponent(r.path) + '"' +
     ' data-hit="' + esc(r.path) + '" data-hitq="' + esc(normalizeQuery(state.query)) + '">' +
-    '<span class="res-title"><span class="ic md">¶</span><span class="nm">' + esc(r.name) + '</span>' +
+    '<span class="res-title"><span class="ic md" aria-hidden="true">' + icon('note', 18) + '</span><span class="nm">' + esc(r.name) + '</span>' +
     (r.dir ? '<span class="res-dir">' + esc(r.dir) + '</span>' : '') + '</span>' +
     '</a>';
 }
@@ -395,12 +395,12 @@ function listShellHtml() {
     '<div class="search-row">' +
     '<input id="q" class="search-input" type="text" placeholder="只搜标题与路径"' +
     ' autocapitalize="off" autocomplete="off" spellcheck="false">' +
-    '<button class="search-clear" id="q-clear" data-act="clearQuery" aria-label="清空搜索">×</button>' +
+    '<button class="search-clear" id="q-clear" data-act="clearQuery" aria-label="清空搜索">' + icon('close', 18) + '</button>' +
     '</div>' +
     '<span class="crumbs" id="list-crumbs"></span>' +
     '</header>' +
     '<main class="list" id="list-main"></main>' +
-    '<button class="fab" id="fab-new" data-act="newFile">＋ 新建笔记</button>' +
+    '<button class="fab" id="fab-new" data-act="newFile">' + icon('new-note', 18) + ' 新建笔记</button>' +
     '<div id="list-overlays"></div>' +
     '<div id="list-toast"></div>';
 }
@@ -870,19 +870,21 @@ function renderList() {
   // 行拆成两段：能点的链接区 + 行尾的操作区。
   // 这两段必须是**兄弟**——按钮塞进 <a> 里是非法嵌套，点按钮会顺手把笔记也打开。
   const items = sorted.map((e) => {
-    const icon = e.type === 'dir' ? '▸' : (e.name.endsWith('.md') ? '¶' : '·');
+    // 评审修复第 5 条：行图标改用 icons.js 的自绘 SVG，不再用 ▸/¶/· 字符。
+    // 局部变量叫 glyph，别遮蔽顶部 import 的 icon()。
+    const glyph = e.type === 'dir' ? icon('folder', 18) : icon('note', 18);
     // 目录行不给「⋯」：目录的改名 / 移动 / 删除都要逐个文件重写（Gitee 没有目录级动作）,
     // 本版不做。放一个只会说「不支持」的按钮，比没有按钮更烦人。
     const more = e.type === 'dir'
       ? ''
-      : '<button class="row-more" data-more="' + esc(e.path) + '" aria-label="更多操作">⋯</button>';
+      : '<button class="row-more" data-more="' + esc(e.path) + '" aria-label="更多操作">' + icon('more', 20) + '</button>';
     if (e.type === 'dir') {
-      return '<div class="row"><a class="row-main" href="#/dir/' + encodeURIComponent(e.path) + '"><span class="ic dir">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a></div>';
+      return '<div class="row"><a class="row-main" href="#/dir/' + encodeURIComponent(e.path) + '"><span class="ic dir" aria-hidden="true">' + glyph + '</span><span class="nm">' + esc(e.name) + '</span></a></div>';
     }
     if (e.name.endsWith('.md')) {
-      return '<div class="row"><a class="row-main" href="#/edit/' + encodeURIComponent(e.path) + '"><span class="ic md">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></a>' + more + '</div>';
+      return '<div class="row"><a class="row-main" href="#/edit/' + encodeURIComponent(e.path) + '"><span class="ic md" aria-hidden="true">' + glyph + '</span><span class="nm">' + esc(e.name) + '</span></a>' + more + '</div>';
     }
-    return '<div class="row dim"><span class="row-main"><span class="ic">' + icon + '</span><span class="nm">' + esc(e.name) + '</span></span>' + more + '</div>';
+    return '<div class="row dim"><span class="row-main"><span class="ic" aria-hidden="true">' + glyph + '</span><span class="nm">' + esc(e.name) + '</span></span>' + more + '</div>';
   }).join('');
 
   // 搜索框常驻在这一页顶部（#16 定的入口）。有词的时候正文区换成结果——
@@ -1403,10 +1405,11 @@ function renderEditor() {
         : '<button class="primary" id="edit-btn">编辑</button>'))
     : '<button id="cancel-btn">取消</button><button class="primary" id="save-btn">保存</button>';
 
-  // 笔记页右上角也有「⋯」，内容与目录页相同。编辑 / 冲突态下按钮**不 disable**——
-  // disable 掉就点不动，那句「先保存或取消」也就没人看得见；置灰交给样式，提示交给点一下。
-  const more = '<button class="row-more' + (isLocked() ? ' is-disabled' : '') +
-    '" data-more="' + esc(state.path) + '" aria-label="更多操作">⋯</button>';
+  // 评审修复第 5 条：正文顶栏的「⋯」收口成骨架 layout.js 的 #btn-more（自绘 SVG、
+  // 常驻在 #app 之外），即 #66 第 1 条的「主入口」；本处不再画第二颗字符「⋯」。
+  // 编辑 / 冲突态的置灰仍按 isLocked() 单一真相，由末尾 syncEditorChrome() 把
+  // is-disabled 类同步到 #btn-more；点开后的三个动作置灰与「先保存或取消，再改文件」
+  // 锁提示走 renderOps() / [data-op]（#65/#66 同一口径），不另造一套锁判定。
 
   // 阅读态左上仍是「‹ 返回」（#61 的落地语义）；编辑态换成「退出编辑」——
   // 手机上左上角那颗是回阅读态，不是「关掉这篇」，返回永远只退一层。
@@ -1415,7 +1418,7 @@ function renderEditor() {
     : '<a class="back" href="' + backHref() + '">‹ 返回</a>';
 
   app.innerHTML =
-    '<header class="bar">' + back + '<span class="title">' + esc(name) + '</span>' + more + '</header>' +
+    '<header class="bar">' + back + '<span class="title">' + esc(name) + '</span></header>' +
     '<main class="editor-body">' + body + '</main>' +
     renderOverlays() +
     renderToast();
@@ -1941,6 +1944,11 @@ initViewport();
 function syncEditorChrome() {
   const openBtn = document.getElementById('btn-open');
   if (openBtn) openBtn.hidden = isLocked();
+  // 评审修复第 5 条：「⋯」主入口（骨架 #btn-more）与旧菜单同一锁判定——
+  // 编辑 / 冲突态置灰但仍能按（不 disable），点开后的三个动作与「先保存或取消，
+  // 再改文件」锁提示由 renderOps() / [data-op] 按 isLocked() 处理，不另造一套判定。
+  const moreBtn = document.getElementById('btn-more');
+  if (moreBtn && moreBtn.classList) moreBtn.classList.toggle('is-disabled', isLocked());
   const actions = document.getElementById('edit-actions');
   if (actions) actions.hidden = !(state.view === 'editor' && !state.readState && !state.emptyActive);
 }

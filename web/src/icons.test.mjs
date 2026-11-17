@@ -51,3 +51,21 @@ test('未知图标名返回空串，不画一个坏占位', () => {
   assert.equal(icon('does-not-exist'), '');
   assert.equal(icon(''), '');
 });
+
+/* ---------- 评审修复第 5 条：正文顶栏⋯与旧列表页图标改用自绘 SVG 的形状契约 ---------- */
+
+test('评审修复第5条：⋯/关闭/新建/笔记/文件夹/返回都是自绘 SVG，不夹带字符图标', () => {
+  for (const name of ['more', 'close', 'new-note', 'note', 'folder', 'back']) {
+    const svg = icon(name);
+    assert.match(svg, /^<svg /, `${name} 应是内联 SVG`);
+    assert.match(svg, /viewBox="0 0 24 24"/, `${name} 用统一画布`);
+    assert.doesNotMatch(svg, /<img|<image|https?:|@font-face|class="fa/i, `${name} 不该引外部资源`);
+    for (const ch of ['⋯', '¶', '▸', '＋', '×', '·', '☰', '✕', '✓', '⚙']) {
+      assert.ok(!svg.includes(ch), `${name} 不该用字符 ${ch} 当图标`);
+    }
+  }
+  // 「更多」是三个实心圆点的自绘 SVG，不是字符 ⋯
+  const more = icon('more');
+  assert.match(more, /<circle/);
+  assert.ok(!more.includes('⋯'));
+});
