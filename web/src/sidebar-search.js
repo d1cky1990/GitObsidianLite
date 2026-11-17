@@ -220,6 +220,10 @@ export function initSidebarSearch(deps = {}) {
   }
   function applyOutside({ gesture }) {
     if (!expanded) return;
+    // 组字中（输入法正在拼拼音）：算「框内有内容」，不收、不失焦、不碰框里的值。
+    // blur 会打断组字、清空 value 会残留半截拼音（手感小原型实测剩过 tong），
+    // 判据 2 明确「组字中滑动按框不为空走保留」，这条最要紧，直接跳过。
+    if (composing) return;
     const d = decideOutsideGesture({ hasQuery: !!normalizeQuery(query), gesture });
     if (d.blur && doc.activeElement === input) { try { input.blur(); } catch (_) {} }
     if (d.collapse) {
