@@ -1031,3 +1031,72 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
    提示条仍是全局居中、离底 80px、普通 2.5s / 带动作 8s（形态与时长一个字不改，
    也不跟着 --vv-inset 走）；冲突态底部仍只有「预览改动处理」一个按钮、
    不多出「返回」；预览层不新增「保留本地」按钮。本段都不复刻。 */
+
+/* ==========================================================================
+   #66 · 文件操作（常驻浮层 / 入口 / 弹窗内滚）（只追加，不改 #61~#65 已有规则）
+   ========================================================================== */
+
+/* 作者样式 .modal/.sheet 带 display，[hidden] 必须 !important 才盖得住（§6 第 1 条）；
+   #61 全局段已有 [hidden]{display:none!important}，这里针对常驻层再钉一次。 */
+#file-ops-layer[hidden],
+#file-ops-layer [hidden] { display: none !important; }
+
+/* --- 判据10：弹窗最大高度＝可见视口 −32px；只滚中间，标题与主动作不滚走 --- */
+.fo-modal {
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;                 /* 整框不滚，交给 .fo-modal-scroll */
+  display: flex; flex-direction: column; gap: 10px;
+}
+.fo-modal > .modal-title { flex: none; }
+.fo-modal-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.fo-modal-scroll > * { flex: none; }  /* 内容元素不被压扁；超出由滚动区自己滚 */
+.fo-modal-btns { flex: none; }
+
+/* --- 弹窗里「已填好的目录」：一块 ≥44×44 的可点区，目录就在弹窗里改 --- */
+.fo-dir-row {
+  display: flex; align-items: center; gap: var(--space-3);
+  width: 100%; min-height: 44px; box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-md);
+  background: var(--color-surface); color: var(--color-text);
+  font-family: inherit; font-size: 14px; text-align: left; cursor: pointer;
+}
+.fo-dir-row:active { background: var(--color-pressed); }
+.fo-dir-ic, .fo-dir-chevron {
+  flex: none; width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--color-text-secondary);
+}
+.fo-dir-ic svg, .fo-dir-chevron svg { width: 18px; height: 18px; }
+.fo-dir-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 目录选择器「上一级」：chevron-right 内联 SVG 转成向上箭头（不用字符 / emoji） */
+.fo-up-ic {
+  flex: none; width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--color-text-secondary);
+}
+.fo-up-ic svg { width: 18px; height: 18px; transform: rotate(-90deg); }
+
+/* --- 树行入口：宽屏悬停才显示行尾「⋯」，默认不挂常驻「⋯」 --- */
+.tree-row-more {
+  display: none; flex: none;
+  width: 44px; height: 44px; box-sizing: border-box;
+  align-items: center; justify-content: center;
+  color: var(--color-text-secondary);
+}
+.tree-row.is-note:hover > .tree-row-more,
+.tree-row.is-note:focus-within > .tree-row-more { display: inline-flex; }
+.tree-row-more svg { width: 20px; height: 20px; }
+.tree-row-more:active { color: var(--color-text); }
+/* 窄屏长按：按下就有反馈（真手势留真机，视觉先落地） */
+.tree-row.is-pressing { background: var(--color-pressed); }
+
+/* --- 不照抄原型写歪的取值（#55 C 类） ------------------------------------
+   命中区沿用基础段：.op 48px / .pick-row 44px / .modal-btns button 44px /
+   .sheet-row button 44px，均已 ≥44×44，本段不改；普通提示条仍 2.5s、带动作 8s，
+   提示条形态、位置、时长一个字不改；目录选择器仍是逐层 / 上一级 / 就放这里那套。 */
