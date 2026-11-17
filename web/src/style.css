@@ -1100,3 +1100,29 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
    命中区沿用基础段：.op 48px / .pick-row 44px / .modal-btns button 44px /
    .sheet-row button 44px，均已 ≥44×44，本段不改；普通提示条仍 2.5s、带动作 8s，
    提示条形态、位置、时长一个字不改；目录选择器仍是逐层 / 上一级 / 就放这里那套。 */
+
+/* ============================================================
+   review · 整体验收修复（评审 Spec 轴 a1/a2/a3/b1/c1，2026-11-17）
+   只在文件末尾追加，不改上面 #61 追加样式入口与 #62/#64/#63/#65/#66 任一段。
+   ============================================================ */
+
+/* 第 4 条：设置页「关于」项目地址一行小字（§4.3 P-1 第 195 行）。
+   12px 非关键元信息、次要色；纯文本，不引外部请求、不写成按钮。 */
+.settings-project {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* 第 5 条：正文顶栏「⋯」主入口（骨架 #btn-more）编辑/冲突态置灰但仍能按。
+   用 text-faint（读得清、不用 opacity）、不 disable（照样能按、给锁提示）。 */
+#btn-more.is-disabled { color: var(--color-text-faint); }
+
+/* 第 5 条：旧列表页字符图标改自绘 SVG 后的行内对齐。icon() 自带 18/20px
+   width/height，这里只补基线对齐，不动已有命中区与颜色规则。 */
+.ic svg, .res-title .ic svg, .row-more svg, .search-clear svg, .fab svg {
+  vertical-align: middle;
+}
