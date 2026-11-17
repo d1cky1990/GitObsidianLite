@@ -850,3 +850,123 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
 /* 不照抄原型写歪的取值（#55 C 类）：勾选框仍是 18×18 看见 + #61 的 44×44 外层
    命中区（不改、不去掉）；提示条沿用普通 2.5s / 带动作 8s（不改形态与时长）；
    暗色图片靠降亮度而非 invert()。这三条本段都不复刻。 */
+
+/* ============================================================
+   #63 · 侧栏搜索与设置（只追加，不改上面 #61 / #62 / #64 已有规则）
+   颜色一律取语义 token，明暗两套由 :root[data-theme] 切换，不写死颜色。
+   ============================================================ */
+
+/* --- 放大镜 ↔ 输入框：只切可见性，输入框节点自始至终在 DOM --- */
+/* 展开时 #search-row 显示、#sidebar-title / #search-toggle 用 hidden 隐藏；
+   #sidebar-q 一直在 .sidebar-head 里，结果刷新 / 提示条 / 换内容都不碰它。 */
+.sidebar-head .search-row { gap: var(--space-1); }
+#sidebar-q {
+  flex: 1; min-width: 0; min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  background: var(--color-surface); color: var(--color-text);
+  font-family: var(--font-ui); font-size: 16px; /* 手机 16px，避免聚焦时自动放大 */
+}
+#sidebar-q::placeholder { color: var(--color-text-faint); }
+#sidebar-q:focus { outline: none; border-color: var(--color-focus); box-shadow: 0 0 0 2px var(--color-focus); }
+/* 框内清空叉复用 .icon-btn 的 44×44 与自绘 close 图标，不新增图标定义 */
+#sidebar-q-clear { flex: none; }
+
+/* --- 搜索结果：一组、按路径序、名字横滚不截断、父目录一行 --- */
+#search-results { padding: var(--space-1) 0; }
+.sb-status {
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.sb-status-offline { color: var(--color-warning); }  /* 连不上用 warning，文字已说清状态 */
+.sb-status-loading, .sb-status-checking { color: var(--color-text-secondary); } /* 中性，不冒充失败 */
+.res-sb { padding-right: var(--space-3); }            /* 行尾至少留 12px，给横滚退路 */
+.res-sb .res-name {
+  display: block; width: 100%; min-width: 0;
+  overflow-x: auto; overflow-y: hidden; white-space: nowrap;
+  scrollbar-width: none;                                /* 长名字横滚，不省略号截断 */
+  font-size: 15px; color: var(--color-text);
+}
+.res-sb .res-name::-webkit-scrollbar { display: none; }
+.res-sb .res-dir { max-width: 100%; }                  /* 父目录次要信息单独一行 */
+
+/* --- 底部横条：固定不动、不随键盘 / 可见视口上移（§6 第 6 条例外） --- */
+/* .sidebar-foot 已是 flex:none，.sidebar-content 是 flex:1 的滚动区，两者不重叠 →
+   滚动区下沿正好在横条上沿，最后几行不被压住。这里把「不避让」写死：不给它
+   visualViewport 偏移、不 position:fixed 跟随。编辑动作区（#65 的 .edit-actions）
+   仍随可见视口移动，两者不是同一套，本段不碰它。 */
+.sidebar-foot { position: static; }
+/* 有词时用 hidden 隐藏「新建」（[hidden] 的 !important 已在 #61 全局段），「设置」常驻；
+   不用透明度留一个看不见但能按的按钮。 */
+#btn-new[hidden] { display: none !important; }
+
+/* --- 设置面板三块 + 自带「‹ 返回目录」 --- */
+.settings { padding: var(--space-3) var(--space-4) var(--space-8); font-family: var(--font-ui); }
+.settings-back {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  min-height: 44px; margin-bottom: var(--space-3);
+  padding: 0 var(--space-1); border: none; background: transparent;
+  color: var(--color-accent); font-size: 15px; cursor: pointer;
+}
+.settings-back svg { width: 20px; height: 20px; }
+.settings-back:hover { color: var(--color-accent-hover); }
+.settings-block { padding: var(--space-4) 0; border-bottom: 1px solid var(--color-border); }
+.settings-h { margin: 0 0 var(--space-3); font-size: 15px; font-weight: 600; color: var(--color-text); }
+.settings-note { margin: var(--space-2) 0 0; font-size: 13px; line-height: 20px; color: var(--color-text-secondary); }
+
+/* 黑白三档分段选择器：每段 ≥44px，当前档一眼看得出（底 + 字 + 边框，不只换颜色） */
+.seg-group { display: flex; gap: var(--space-1); }
+.seg {
+  flex: 1; min-height: 44px; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  background: transparent; color: var(--color-text);
+  font-family: inherit; font-size: 15px; font-weight: 500; cursor: pointer;
+}
+.seg:hover { background: var(--color-hover); }
+.seg:active { background: var(--color-pressed); }
+.seg.is-active {
+  background: var(--color-accent-soft); color: var(--color-accent);
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent); /* 1px 当前段边框，不只靠颜色 */
+}
+
+/* 新建落点：选「指定目录」才露出的目录行 */
+.target-dir-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.target-dir-caption { font-size: 13px; color: var(--color-text-secondary); }
+.target-dir-input {
+  flex: 1; min-width: 0; min-height: 44px; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  background: var(--color-surface); color: var(--color-text); font-family: inherit; font-size: 16px;
+}
+.target-dir-input:focus { outline: none; border-color: var(--color-focus); box-shadow: 0 0 0 2px var(--color-focus); }
+.target-dir-pick {
+  flex: none; min-height: 44px; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  background: transparent; color: var(--color-accent); font-family: inherit; font-size: 15px; cursor: pointer;
+}
+.target-dir-pick:active { background: var(--color-pressed); }
+.settings-version { margin: 0; font-size: 14px; color: var(--color-text); font-family: var(--font-mono); }
+
+/* 「指定目录不在了」问题区：当场报 + 两条出路；断网说连不上、不冒充不在了 */
+.new-target-issue {
+  position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px)); box-sizing: border-box;
+  padding: var(--space-4); border-radius: var(--radius-md);
+  background: var(--color-raised); border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-modal); z-index: var(--z-modal);
+}
+.new-target-issue[hidden] { display: none !important; }
+.target-issue-msg { margin: 0 0 var(--space-3); font-family: var(--font-ui); font-size: 15px; line-height: 1.5; color: var(--color-text); }
+.target-missing .target-issue-msg { color: var(--color-danger); }
+.target-offline .target-issue-msg { color: var(--color-warning); }
+.target-issue-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.target-issue-actions button {
+  min-height: 44px; padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  background: transparent; color: var(--color-text); font-family: inherit; font-size: 15px; cursor: pointer;
+}
+.target-issue-actions button:active { background: var(--color-pressed); }
+
+/* 不照抄原型写歪的取值（#55 C 类）：结果不截断、有词只隐藏「新建」、名字横滚不省略号、
+   图标全自绘 SVG、遮罩只覆盖露出的 1/4（#61 已定 25vw）。本段不复刻那些演示取值。 */
