@@ -970,3 +970,64 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
 
 /* 不照抄原型写歪的取值（#55 C 类）：结果不截断、有词只隐藏「新建」、名字横滚不省略号、
    图标全自绘 SVG、遮罩只覆盖露出的 1/4（#61 已定 25vw）。本段不复刻那些演示取值。 */
+
+/* ============================================================
+   #65 · 编辑态与冲突（只追加，不改上面 #61 / #62 / #64 / #63 已有规则）
+   ============================================================ */
+
+/* --- 编辑动作区：随可见视口移动 -------------------------------------------
+   动作区由 #65 落到 #61 骨架层的 #edit-actions（在 #app 之外、节点常驻，
+   重画正文永不碰它）。--vv-inset 由 viewport.js 按 visualViewport 算好写到
+   :root：键盘弹起时 innerHeight 往往不变、可见视口变矮，这段被遮住的量就是
+   动作区要上移的量。收起键盘 inset=0，位置自动复原。不假设「页面高度 = 屏幕高度」。 */
+#edit-actions.edit-actions {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: var(--vv-inset, 0px);
+  z-index: var(--z-topbar);
+}
+/* 宽屏侧栏 304px 常驻，动作区从它右侧起；侧栏收起后回到整宽。 */
+@media (min-width: 900px) {
+  #edit-actions.edit-actions { left: 304px; }
+  #shell.sidebar-collapsed #edit-actions.edit-actions { left: 0; }
+}
+/* 动作按钮沿用 .foot button 的同一套尺寸 / 44px 命中区，只换宿主选择器。 */
+#edit-actions button {
+  flex: 1; min-height: 44px; font-family: inherit; font-size: 15px;
+  padding: var(--space-3);
+  border-radius: var(--radius-md); border: 1px solid var(--color-border-strong);
+  background: var(--color-surface); color: var(--color-text); cursor: pointer;
+}
+#edit-actions button.primary {
+  background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent);
+}
+#edit-actions button:active { opacity: .8; }
+#edit-actions button[disabled] { opacity: .55; cursor: default; }
+#edit-actions button.primary[disabled] { opacity: .85; }
+/* 阅读态读不到远端时那句说明：明说连不上 / 不在了，配「重试」按钮；
+   不用会 2.5 秒消失的全局提示代劳，也不说成「冲突」。 */
+#edit-actions .action-note {
+  flex: 1; align-self: center; min-width: 0;
+  font-size: 13px; line-height: 1.4; color: var(--color-warning);
+}
+
+/* --- 编辑 / 冲突态左上的「退出编辑」「返回」：由 <a> 改成 <button> ---------
+   视觉沿用 .bar .back 的强调色，button 自己抹掉默认边框与底色；命中区 44px。 */
+.bar button.back {
+  appearance: none; -webkit-appearance: none;
+  min-height: 44px; padding: 0 var(--space-2);
+  border: none; background: transparent;
+  font-family: inherit; font-size: 14px; cursor: pointer;
+  color: var(--color-accent);
+}
+.bar button.back:active { background: var(--color-pressed); }
+
+/* --- 侧栏底部「新建 / 设置」横条是例外，固定不动（§6 第 6 条） -------------
+   #63 段已把 .sidebar-foot 定成 position:static、不随可见视口上移。本段
+   **刻意不** 给它任何 --vv-inset / translateY：编辑动作区与横条不是同一套，
+   把横条也顶上去会压缩搜索结果的可见面积，是用户明确否掉的方案。 */
+
+/* --- 不照抄原型写歪的取值（#55 C 类） ------------------------------------
+   提示条仍是全局居中、离底 80px、普通 2.5s / 带动作 8s（形态与时长一个字不改，
+   也不跟着 --vv-inset 走）；冲突态底部仍只有「预览改动处理」一个按钮、
+   不多出「返回」；预览层不新增「保留本地」按钮。本段都不复刻。 */
