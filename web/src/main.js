@@ -1682,3 +1682,30 @@ notifySidebarShown();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') watchTreeIndex(ensureIndex());
 });
+
+/* ---------- #63 侧栏搜索与设置接线（只加 import 与这一处，不重排 / 不改别人函数） ----------
+   放大镜 ↔ 输入框只切可见性、六行点/滑规则、搜索四态、结果就地替树；设置三块、
+   黑白三档即时生效、指定目录核对。逻辑都在 sidebar-search.js / settings.js，
+   main.js 只注入依赖并各调一次 init；与 #62 树接线、#64 空状态/阅读接线并存。 */
+import { initSidebarSearch } from './sidebar-search.js';
+import { initSettings } from './settings.js';
+import { showSidebarView } from './layout.js';
+
+initSidebarSearch({
+  getNotePaths: () => (wikilinkIndex ? wikilinkIndex.notePaths : null),
+  checkOnline: () => checkOnline(),
+  ensureIndex: () => ensureIndex(),
+  showView: (name) => showSidebarView(name),
+  openPath: (path) => { location.hash = '#/edit/' + encodeURIComponent(path); },
+});
+
+initSettings({
+  showView: (name) => showSidebarView(name),
+  dirProbe: (dir) => listDir(dir),
+});
+
+// #66 打开新建弹窗那一刻，派发下面这条事件触发「指定目录不在了」核对：
+//   document.dispatchEvent(new CustomEvent('ui:new-note-target-check',
+//     { detail: { target: getNewNoteTarget() } }));  // getNewNoteTarget 由 settings.js 导入
+// 核对逻辑、三态与两条出路文案都在 settings.js（initSettings 已监听本事件），
+// 断网一律说「连不上」，不追目录的改名搬家。本票不抢 openCreate() 的实现。

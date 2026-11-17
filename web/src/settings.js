@@ -214,3 +214,108 @@ export function newNoteTargetIssueHtml(kind, dir = '') {
   }
   return '';
 }
+
+/* ---------- DOM 接线层（真浏览器验；node 无 document 时整段 no-op） ---------- */
+
+/**
+ * 一次性接线。往 #settings-view 填三块（黑白 / 新建落点 / 关于），接分段选择器、
+ * 「‹ 返回目录」、指定目录入口与两条出路，以及「打开新建弹窗那一刻」的核对事件。
+ * 主题切换只调 selectTheme（setThemePreference + applyTheme），不刷新、不确认。
+ * 三块换进换出不进 history：这里只调注入的 showView（layout.js 只切 hidden）。
+ */
+export function initSettings(deps = {}) {
+  const doc = deps.document || (typeof document !== 'undefined' ? document : null);
+  if (!doc || typeof doc.getElementById !== 'function') return null;
+  const view = doc.getElementById('settings-view');
+  if (!view) return null;
+  const showView = typeof deps.showView === 'function' ? deps.showView : () => {};
+  const dirProbe = typeof deps.dirProbe === 'function' ? deps.dirProbe : null;
+  const storage = deps.storage;       // undefined → 用真实 localStorage
+  const matchMedia = deps.matchMedia;
+  const root = deps.root;
+
+  function themeOpts() {
+    const o = {};
+    if (storage !== undefined) o.storage = storage;
+    if (matchMedia !== undefined) o.matchMedia = matchMedia;
+    if (root !== undefined) o.root = root;
+    return o;
+  }
+  function render() {
+    view.innerHTML = settingsHtml({
+      theme: getThemePreference(storage),
+      target: getNewNoteTarget(storage),
+    });
+  }
+
+  // 常驻的「指定目录不在了」问题区：切 hidden，不换任何常驻输入节点。
+  let issueHost = doc.getElementById('new-target-issue');
+  if (!issueHost && typeof doc.createElement === 'function') {
+    issueHost = doc.createElement('div');
+    issueHost.id = 'new-target-issue';
+    issueHost.className = 'new-target-issue';
+    issueHost.hidden = true;
+    (doc.body || view).appendChild(issueHost);
+  }
+  function showTargetIssue(kind, dir) {
+    if (!issueHost) return;
+    issueHost.innerHTML = newNoteTargetIssueHtml(kind, dir);
+    issueHost.hidden = !issueHost.innerHTML;
+  }
+  function dispatch(name, detail) {
+    try { doc.dispatchEvent(new CustomEvent(name, { detail })); } catch (_) { /* 老环境忽略 */ }
+  }
+
+  doc.addEventListener('ui:shell-action', (e) => {
+    const action = e && e.detail && e.detail.action;
+    if (action === 'settings') render(); // 每次进设置重画，当前档一眼看得出
+  });
+
+  doc.addEventListener('click', (e) => {
+    const t = e && e.target;
+    const closest = (sel) => (t && t.closest ? t.closest(sel) : null);
+    if (closest('[data-settings-back]')) { showView('tree'); return; }  // 自带返回目录，不靠返回键
+    const themeOpt = closest('[data-theme-opt]');
+    if (themeOpt) {
+      selectTheme(themeOpt.dataset.themeOpt, themeOpts()); // 立刻生效、不确认、只影响本机
+      render();
+      return;
+    }
+    const modeOpt = closest('[data-target-mode]');
+    if (modeOpt) {
+      const cur = getNewNoteTarget(storage);
+      setNewNoteTarget({ mode: modeOpt.dataset.targetMode, dir: cur.dir }, storage);
+      render();
+      return;
+    }
+    if (closest('[data-target-pick]')) {
+      dispatch('ui:pick-target-dir', { dir: getNewNoteTarget(storage).dir }); // 目录选择器归 #66
+      return;
+    }
+    const fix = closest('[data-target-fix]');
+    if (fix) {
+      if (issueHost) issueHost.hidden = true;
+      if (fix.dataset.targetFix === 'settings') { showView('settings'); render(); }
+      else dispatch('ui:target-fix-here', {}); // 「就在这里改这一次」交给 #66 弹窗
+      return;
+    }
+  });
+
+  // 指定目录的值就地改通用路径（不改这一次；弹窗里照旧可改这一次）
+  doc.addEventListener('input', (e) => {
+    const inp = e && e.target;
+    if (inp && inp.matches && inp.matches('[data-target-dir]')) {
+      setNewNoteTarget({ mode: 'fixed', dir: inp.value }, storage);
+    }
+  });
+
+  // 打开新建弹窗那一刻核对指定目录：触发点归 #66 派发本事件，核对逻辑与文案归 #63。
+  doc.addEventListener('ui:new-note-target-check', (e) => {
+    const target = (e && e.detail && e.detail.target) || getNewNoteTarget(storage);
+    const probe = dirProbe || (() => Promise.reject(new Error('no probe')));
+    verifyNewNoteTarget(target, { probe }).then((r) => showTargetIssue(r.kind, r.dir));
+  });
+
+  render(); // 首屏就画好，当前档一眼看得出
+  return { render, showTargetIssue };
+}
