@@ -154,25 +154,43 @@ body { font-family:var(--font-ui); padding:0 0 80px; }
 }
 .screen[data-side-open="true"] .sidebar { transform:translateX(0); }
 .side-head {
-  flex:0 0 auto; padding:0 var(--space-2) var(--space-2); border-bottom:1px solid var(--color-border);
+  position:relative; flex:0 0 auto; height:56px; padding:0; border-bottom:1px solid var(--color-border);
   background:var(--color-sidebar); z-index:2;
 }
-.side-head-top { display:flex; align-items:center; justify-content:space-between; min-height:44px; }
-.side-title { font-family:var(--font-reading); font-size:18px; font-weight:600; padding-left:var(--space-2); }
-.side-head-row { display:flex; align-items:center; gap:var(--space-1); }
-.search-box { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:var(--space-1);
-  height:44px; padding:0 var(--space-3); background:var(--color-surface);
-  border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); }
-.search-box svg { width:18px; height:18px; flex:0 0 auto; color:var(--color-text-secondary); }
-.search-box input { flex:1 1 auto; min-width:0; border:0; background:transparent; outline:0;
+.side-title { position:absolute; left:12px; top:0; bottom:0; display:flex; align-items:center;
+  font-family:var(--font-reading); font-size:18px; font-weight:600; }
+#btn-search-open { position:absolute; right:6px; top:6px; z-index:1; }
+.search-box { position:absolute; inset:0; z-index:3; display:flex; align-items:center; gap:var(--space-1);
+  height:56px; padding:0 4px 0 var(--space-3); background:var(--color-surface);
+  border:0; border-bottom:1px solid var(--color-border); border-radius:0; }
+.search-box svg { width:20px; height:20px; flex:0 0 auto; color:var(--color-text-secondary); }
+.search-box input { flex:1 1 auto; min-width:0; height:44px; border:0; background:transparent; outline:0;
   color:var(--color-text); font-size:16px; font-family:var(--font-ui); }
 .search-box input::placeholder { color:var(--color-text-faint); }
 .side-head .tap { min-width:44px; min-height:44px; flex:0 0 auto; }
+#btn-search-open svg { width:20px; height:20px; }
+#btn-clear { color:var(--color-text-secondary); }
+#btn-clear svg { width:20px; height:20px; }
 .panels { flex:1 1 auto; min-height:0; position:relative; }
+.side-foot { flex:0 0 auto; display:flex; gap:0; border-top:1px solid var(--color-border);
+  background:var(--color-sidebar); padding-bottom:env(safe-area-inset-bottom,0px); }
+.side-foot .tap { flex:1 1 50%; width:0; min-width:0; height:48px; min-height:48px; border-radius:0; }
+.side-foot .tap:not([hidden]) + .tap:not([hidden]) { border-left:1px solid var(--color-border); }
+.side-foot .tap:focus-visible { outline-offset:-2px; }
+.side-foot .tap svg { width:20px; height:20px; }
 .panel { position:absolute; inset:0; overflow-y:auto; overscroll-behavior:contain; }
 .scrim { position:absolute; inset:0; z-index:20; background:var(--color-scrim); opacity:0; pointer-events:none;
   transition:opacity 180ms ease-out; }
 .screen[data-side-open="true"][data-layout="phone"] .scrim { opacity:1; pointer-events:auto; }
+/* 侧栏外的关闭键：手机贴在侧栏右外侧、露出的那 1/4 的左上角，遮罩在它身后。
+   靠“带底色的方块 + 裸叉”与搜索框里那颗“圆内叉”区分开。宽屏侧栏常驻，不需要它。 */
+.side-close-out { position:absolute; left:calc(75% + 8px); top:8px; z-index:40; width:44px; height:44px;
+  border:1px solid var(--color-border-strong); border-radius:var(--radius-md);
+  background:var(--color-raised); color:var(--color-text); }
+.side-close-out:hover { background:var(--color-hover); }
+.side-close-out:active { background:var(--color-pressed); }
+.side-close-out svg { width:20px; height:20px; }
+.screen[data-layout="wide"] .side-close-out { display:none; }
 
 /* 宽屏：常驻 304px，可收起 */
 .screen[data-layout="wide"] .sidebar { width:304px; max-width:304px; transform:none;
@@ -433,8 +451,9 @@ body { font-family:var(--font-ui); padding:0 0 80px; }
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <g id="i-menu"><path d="M4 6h16M4 12h16M4 18h16"/></g>
   <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
+  <g id="i-clear"><circle cx="12" cy="12" r="7.5"/><path d="M9 9l6 6M15 9l-6 6"/></g>
   <g id="i-search"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></g>
-  <g id="i-settings"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M5.9 5.9l1.5 1.5M16.6 16.6l1.5 1.5M18.1 5.9l-1.5 1.5M7.4 16.6l-1.5 1.5"/></g>
+  <g id="i-settings"><path d="M9.7 3h4.6l.6 2.5c.5.2 1 .5 1.4.8l2.4-.9 2.3 4-2 1.6c.1.5.1 1 0 1.5l2 1.6-2.3 4-2.4-.9c-.4.3-.9.6-1.4.8l-.6 2.5H9.7l-.6-2.5c-.5-.2-1-.5-1.4-.8l-2.4.9-2.3-4 2-1.6a7 7 0 0 1 0-1.5L3 8.4l2.3-4 2.4.9c.4-.3.9-.6 1.4-.8z"/><circle cx="12" cy="12" r="3.1"/></g>
   <g id="i-new"><path d="M12 4v16M4 12h16"/></g>
   <g id="i-back"><path d="M14.5 5l-7 7 7 7"/></g>
   <g id="i-more"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></g>
@@ -555,26 +574,26 @@ function svg(id, cls) {
     </div>
 
     <div class="scrim" id="scrim" data-act="closeSide"></div>
+    <button class="tap side-close-out" id="btn-side-close" data-act="closeSide" data-tap aria-label="关闭侧栏" hidden></button>
 
     <div class="sidebar" id="sidebar">
       <div class="side-head">
-        <div class="side-head-top">
-          <span class="side-title">笔记库</span>
-          <button class="tap" id="btn-side-close" data-act="closeSide" data-tap aria-label="关闭侧栏"></button>
-        </div>
-        <div class="side-head-row">
-          <div class="search-box">
-            <span id="search-icon"></span>
-            <input id="search-input" type="text" placeholder="搜索标题与路径" autocomplete="off" aria-label="搜索标题与路径">
-          </div>
-          <button class="tap" id="btn-new" data-act="newNote" data-tap aria-label="新建"></button>
-          <button class="tap" id="btn-settings" data-act="openSettings" data-tap aria-label="设置"></button>
+        <span class="side-title">笔记库</span>
+        <button class="tap" id="btn-search-open" data-act="searchOpen" data-tap aria-label="展开搜索"></button>
+        <div class="search-box" id="search-box" hidden>
+          <span id="search-icon"></span>
+          <input id="search-input" type="text" placeholder="搜索标题与路径" autocomplete="off" aria-label="搜索标题与路径">
+          <button class="tap" id="btn-clear" data-act="clearSearch" data-tap aria-label="清空搜索"></button>
         </div>
       </div>
       <div class="panels">
         <div class="panel" id="p-tree"></div>
         <div class="panel" id="p-search" hidden></div>
         <div class="panel" id="p-settings" hidden></div>
+      </div>
+      <div class="side-foot" id="sidebar-foot">
+        <button class="tap" id="btn-new" data-act="newNote" data-tap aria-label="新建"></button>
+        <button class="tap" id="btn-settings" data-act="openSettings" data-tap aria-label="设置"></button>
       </div>
     </div>
 
@@ -803,7 +822,7 @@ const RECENT = [
 ];
 const S = {
   viewport:'phone', themePref:'system', keyboard:false, tape:false,
-  sideOpen:false, sideCollapsed:false, panel:'tree',
+  sideOpen:false, sideCollapsed:false, panel:'tree', searchExpanded:false,
   treeMode:'ready', searchMode:'results', query:'',
   expanded:new Set(['03_Projects','03_Projects/笔记系统']),
   selectedDir:'03_Projects/笔记系统', note:null,
@@ -907,7 +926,13 @@ function render() {
   $('btn-new').innerHTML = svg('new');
   $('btn-settings').innerHTML = svg('settings');
   $('btn-side-close').innerHTML = svg('close');
+  $('btn-side-close').hidden = !S.sideOpen;
+  $('btn-search-open').innerHTML = svg('search');
+  $('btn-clear').innerHTML = svg('clear');
   $('search-icon').innerHTML = svg('search');
+  $('btn-search-open').hidden = S.searchExpanded;
+  $('search-box').hidden = !S.searchExpanded;
+  $('search-input').setAttribute('aria-expanded', String(S.searchExpanded));
   const locked = (S.view === 'editing' || S.view === 'conflict');
   $('btn-menu').disabled = locked;
   $('btn-menu').classList.toggle('is-faint', locked);
@@ -1313,6 +1338,7 @@ function setSide(open) {
   if (open && S.network === 'off') S.treeMode = 'offline';
   if (open && S.network !== 'off' && S.treeMode === 'offline') S.treeMode = 'ready';
   if (!open && S.panel === 'search' && !S.query.trim()) S.panel = 'tree';
+  if (!open && !S.query.trim()) S.searchExpanded = false;
   render();
 }
 function openNote(path, fromSearch) {
@@ -1367,6 +1393,7 @@ function toggleDir(path) {
   S.selectedDir = path; S.stateId = (path === '日记归档' ? 'T-6' : 'T-4'); render();
 }
 function onSearchInput() {
+  S.searchExpanded = true;
   S.query = $('search-input').value;
   if (S.query.trim()) {
     S.panel = 'search';
@@ -1382,7 +1409,7 @@ function onSearchInput() {
 function applyState(id) {
   // 每一态都是一个完整、自洽的状态组合，不是半截画面
   const base = () => {
-    S.sideOpen = false; S.sideCollapsed = false; S.panel = 'tree'; S.view = 'empty';
+    S.sideOpen = false; S.sideCollapsed = false; S.panel = 'tree'; S.searchExpanded = false; S.view = 'empty';
     S.note = null; S.recentMode = 'normal'; S.readMode = 'ok'; S.treeMode = 'ready';
     S.searchMode = 'results'; S.query = ''; $('search-input').value = '';
     S.overlay = null; S.toast = null; S.dirty = false; S.editBusy = false;
@@ -1400,7 +1427,7 @@ function applyState(id) {
       .forEach(k => { const el = $(k); if (el) el.scrollTop = 0; });
     $('editor-input').scrollTop = 0;
   };
-  const openSide = (panel) => { S.sideOpen = true; S.panel = panel||'tree'; };
+  const openSide = (panel) => { S.sideOpen = true; S.panel = panel||'tree'; S.searchExpanded = panel === 'search'; };
   base(); S.stateId = id;
   switch (id) {
     case 'T-1': openSide(); S.treeMode = 'loading-first'; break;
@@ -1534,7 +1561,28 @@ document.addEventListener('click', e => {
       else setSide(false);
       break;
     case 'openSettings': S.panel='settings'; S.stateId='P-1'; render(); break;
-    case 'backToTree': S.panel='tree'; S.query=''; $('search-input').value=''; S.stateId='T-4'; render(); break;
+    case 'searchOpen': {
+      // 展开搜索：只切可见性，输入框节点自始至终是同一个
+      S.searchExpanded = true;
+      S.panel = S.query.trim() ? 'search' : 'tree';
+      S.stateId = 'T-4'; render();
+      const inp = $('search-input');
+      if (inp) { inp.focus(); try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} }
+      break;
+    }
+    case 'clearSearch': {
+      // 清空：只改内容，节点、焦点、键盘都留在原处
+      const inp = $('search-input');
+      if (!inp) break;
+      inp.value = '';
+      S.query = '';
+      S.panel = 'tree';
+      S.stateId = 'T-4';
+      render();
+      inp.focus();
+      break;
+    }
+    case 'backToTree': S.panel='tree'; S.query=''; S.searchExpanded=false; $('search-input').value=''; S.stateId='T-4'; render(); break;
     case 'toggleDir': toggleDir(el.dataset.path); break;
     case 'openNote': openNote(el.dataset.path); break;
     case 'openResult': openNote(el.dataset.path, true); break;
