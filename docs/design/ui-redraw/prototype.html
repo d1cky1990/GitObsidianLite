@@ -183,9 +183,9 @@ body { font-family:var(--font-ui); padding:0 0 80px; }
   transition:opacity 180ms ease-out; }
 .screen[data-side-open="true"][data-layout="phone"] .scrim { opacity:1; pointer-events:auto; }
 /* 侧栏外的关闭键：手机贴在侧栏右外侧、露出的那 1/4 的左上角，遮罩在它身后。
-   靠“带底色的方块 + 裸叉”与搜索框里那颗“圆内叉”区分开。宽屏侧栏常驻，不需要它。 */
+   靠“圆形底板 + 裸叉”与搜索框里那颗“光秃秃的叉”区分开。宽屏侧栏常驻，不需要它。 */
 .side-close-out { position:absolute; left:calc(75% + 8px); top:8px; z-index:40; width:44px; height:44px;
-  border:1px solid var(--color-border-strong); border-radius:var(--radius-md);
+  border:1px solid var(--color-border-strong); border-radius:50%;
   background:var(--color-raised); color:var(--color-text); }
 .side-close-out:hover { background:var(--color-hover); }
 .side-close-out:active { background:var(--color-pressed); }
@@ -451,10 +451,10 @@ body { font-family:var(--font-ui); padding:0 0 80px; }
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <g id="i-menu"><path d="M4 6h16M4 12h16M4 18h16"/></g>
   <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
-  <g id="i-clear"><circle cx="12" cy="12" r="7.5"/><path d="M9 9l6 6M15 9l-6 6"/></g>
+  <g id="i-clear"><path d="M8.5 8.5l7 7M15.5 8.5l-7 7"/></g>
   <g id="i-search"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></g>
   <g id="i-settings"><path d="M9.7 3h4.6l.6 2.5c.5.2 1 .5 1.4.8l2.4-.9 2.3 4-2 1.6c.1.5.1 1 0 1.5l2 1.6-2.3 4-2.4-.9c-.4.3-.9.6-1.4.8l-.6 2.5H9.7l-.6-2.5c-.5-.2-1-.5-1.4-.8l-2.4.9-2.3-4 2-1.6a7 7 0 0 1 0-1.5L3 8.4l2.3-4 2.4.9c.4-.3.9-.6 1.4-.8z"/><circle cx="12" cy="12" r="3.1"/></g>
-  <g id="i-new"><path d="M12 4v16M4 12h16"/></g>
+  <g id="i-new"><path d="M4.5 3.5h6.5l3.5 3.5v8.5h-10zM11 3.5V7h3.5"/><path d="M15.5 17.5h6M18.5 14.5v6"/></g>
   <g id="i-back"><path d="M14.5 5l-7 7 7 7"/></g>
   <g id="i-more"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></g>
   <g id="i-chev-r"><path d="M9 5l7 7-7 7"/></g>
