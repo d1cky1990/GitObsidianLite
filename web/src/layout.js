@@ -39,7 +39,9 @@ export function shellHtml() {
     // renderEditor() 的整块 app.innerHTML 永远碰不到它——输入法组字不会断。
     '    <div id="search-row" class="search-row" hidden>',
     '      <input id="sidebar-q" class="search-input" type="text" placeholder="只搜标题与路径" autocapitalize="off" autocomplete="off" spellcheck="false">',
-    '      <button id="sidebar-q-clear" class="icon-btn" data-shell="clear" aria-label="清空搜索">' + icon('close') + '</button>',
+    // #69：框内清空用独立的 clear（裸叉、比 close 小一号、不套底板），与侧栏外
+    // 那颗「圆盘上的 close」靠容器区分；两枚命中区不重叠（§5.3 / §8.2 定稿）。
+    '      <button id="sidebar-q-clear" class="icon-btn" data-shell="clear" aria-label="清空搜索">' + icon('clear') + '</button>',
     '    </div>',
     '  </div>',
     // 三块内容共用一块滚动区，各自是一个常驻容器；切换只切 hidden，不增删节点。
@@ -127,7 +129,12 @@ export function initLayout() {
     const sidebar = el('sidebar'), scrim = el('scrim'), btnClose = el('btn-close'), shell = el('shell');
     if (sidebar) sidebar.hidden = wide ? collapsed : !state.sidebarOpen;
     if (scrim) scrim.hidden = wide || !state.sidebarOpen; // 宽屏没有遮罩
-    if (btnClose) btnClose.hidden = wide ? collapsed : !state.sidebarOpen;
+    // #69：侧栏外那把叉**只在窄屏出现**（它贴在遮罩上、只在滑出的侧栏旁才有位置）；
+    // 宽屏侧栏常驻，收起走正文顶栏的「☰」（§5.2 / §7.2）。
+    if (btnClose) btnClose.hidden = wide || !state.sidebarOpen;
+    // 同一颗「☰」在宽屏兼作收起：文字说清楚它这一步会做什么，别留着「打开侧栏」却说反话。
+    const btnOpen = el('btn-open');
+    if (btnOpen) btnOpen.setAttribute('aria-label', wide && state.sidebarOpen ? '收起侧栏' : '打开侧栏');
     if (shell) shell.classList.toggle('sidebar-collapsed', wide && collapsed);
   }
 
@@ -166,7 +173,12 @@ export function initLayout() {
     const target = e.target && e.target.closest ? e.target.closest('[data-shell]') : null;
     if (!target) return;
     const act = target.dataset.shell;
-    if (act === 'open') { openSidebar(); return; }
+    // 「☰」是开合同一个入口：宽屏侧栏常驻时没有别的收起键（#69），
+    // 所以它按当前状态开或收；窄屏侧栏盖着正文，这颗其实点不到。
+    if (act === 'open') {
+      if (state.sidebarOpen) closeSidebar(); else openSidebar();
+      return;
+    }
     if (act === 'close') { closeSidebar(); return; }
     // 容器切换归 #61：放大镜 → 搜索结果、设置 → 设置面板（只切 hidden）
     if (act === 'search') showSidebarView('search');

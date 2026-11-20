@@ -73,7 +73,7 @@
   --shadow-toast: 0 4px 16px #30271829;
 
   --z-content: 1; --z-topbar: 10; --z-scrim: 20; --z-drawer: 30;
-  --z-sheet: 50; --z-modal: 60; --z-bubble: 70; --z-toast: 80;
+  --z-close: 40; --z-sheet: 50; --z-modal: 60; --z-bubble: 70; --z-toast: 80;
 
   /* 勾选完成时的勾（stroke 取各自主题的 --color-on-accent，随主题换色） */
   --task-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5 6.8 12 12.5 4.5' fill='none' stroke='%23FFF9EE' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -197,11 +197,14 @@ a { color: inherit; text-decoration: none; }
 /* 三块内容（树 / 搜索结果 / 设置）只切 hidden、不增删节点；切换时 120ms 淡入（§9.1） */
 .sidebar-view { min-height: 100%; animation: view-in 120ms ease; }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* 底部横条（#69 按 §5.2 / §7.2 落地）：内容区高 48px，底下另留底部安全区；
+   两颗按钮各占一半、中间不留缝。固定不动：键盘弹起被盖住就盖住，
+   不随可见视口上移（§6 第 6 条例外）。 */
 .sidebar-foot {
-  flex: none; display: flex; gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
+  flex: none; display: flex; gap: 0;
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
+  background: var(--color-sidebar);
   border-top: 1px solid var(--color-border);
-  /* 固定不动：键盘弹起被盖住就盖住，不随可见视口上移（§6 第 6 条例外） */
 }
 /* 44px 命中区：所有骨架图标按钮 */
 .icon-btn {
@@ -213,6 +216,19 @@ a { color: inherit; text-decoration: none; }
 .icon-btn:hover { background: var(--color-hover); }
 .icon-btn:active { background: var(--color-pressed); }
 .icon-btn[hidden] { display: none !important; }
+
+/* 横条里那颗按钮：整半区都可点、不各画边框 / 不加圆角，20px 图标在自己那半区居中 */
+.sidebar-foot .icon-btn {
+  flex: 1 1 50%; width: auto; min-width: 44px;
+  height: 48px; min-height: 48px;
+  border-radius: 0;
+}
+/* 两颗之间一条 1px 竖线；只剩一颗（有搜索词时「新建」被 hidden 藏起）时
+   不留半空的分隔线、也不占半宽（§5.3） */
+.sidebar-foot .icon-btn + .icon-btn { border-left: 1px solid var(--color-border); }
+.sidebar-foot .icon-btn[hidden] + .icon-btn { border-left: 0; }
+/* 焦点环画在按钮内侧，不能被横条裁掉 */
+.sidebar-foot .icon-btn:focus-visible { outline-offset: -2px; }
 
 /* 常驻搜索输入框：放大镜 ↔ 输入框只切可见性，节点不换（§6 第 1 条） */
 .search-row { display: flex; align-items: center; gap: var(--space-2); }
@@ -255,11 +271,19 @@ a { color: inherit; text-decoration: none; }
 }
 .toast-host { position: relative; z-index: var(--z-toast); pointer-events: none; }
 
-/* 关闭键：窄屏在露出的 1/4 左上角、贴侧栏边缘外侧 */
+/* 关闭键：窄屏在露出的 1/4 左上角、贴侧栏边缘外侧，身后是遮罩。
+   #69：套一个**圆形底板**（--color-raised 底 + 1px --color-border-strong 边），
+   内用 20px 裸叉 close——它得读作一颗独立按钮，而不是一根漂浮的叉；
+   与框内那颗裸叉 clear 的区分靠容器，不靠图形（§7.2）。位置按规范：left 75vw+8、top 8。 */
 #btn-close {
-  position: fixed; top: var(--space-1); left: calc(75vw + var(--space-2));
-  z-index: var(--z-bubble);
+  position: fixed; top: var(--space-2); left: calc(75vw + var(--space-2));
+  z-index: var(--z-close);
+  border-radius: 50%;
+  background: var(--color-raised);
+  border: 1px solid var(--color-border-strong);
 }
+#btn-close:hover { background: var(--color-hover); }
+#btn-close:active { background: var(--color-pressed); }
 
 /* --- 宽屏：侧栏 304px 常驻、可收起；正文在剩余区域居中 --- */
 @media (min-width: 900px) {
@@ -274,7 +298,9 @@ a { color: inherit; text-decoration: none; }
   .scrim, .scrim[hidden] { display: none !important; }
   .main { margin-left: 304px; }
   #shell.sidebar-collapsed .main { margin-left: 0; }
-  #btn-close { position: static; } /* 宽屏没有遮罩，关闭键在正文顶栏 ☰ 旁边 */
+  /* #69：侧栏外那把叉只在窄屏出现（宽屏侧栏常驻、没有遮罩可倚）；
+     宽屏收起走正文顶栏的「☰」。JS 已经按断点切 hidden，这里再钉一层。 */
+  #btn-close { display: none !important; }
 }
 
 /* ============================================================
@@ -869,8 +895,9 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
 }
 #sidebar-q::placeholder { color: var(--color-text-faint); }
 #sidebar-q:focus { outline: none; border-color: var(--color-focus); box-shadow: 0 0 0 2px var(--color-focus); }
-/* 框内清空叉复用 .icon-btn 的 44×44 与自绘 close 图标，不新增图标定义 */
-#sidebar-q-clear { flex: none; }
+/* 框内清空键：44×44 透明命中区 + 20px 裸叉 clear（不带圈、不套底板），
+   图标色 --color-text-secondary；不新增实心底、不加文字（§7.2）。 */
+#sidebar-q-clear { flex: none; color: var(--color-text-secondary); }
 
 /* --- 搜索结果：一组、按路径序、名字横滚不截断、父目录一行 --- */
 #search-results { padding: var(--space-1) 0; }

@@ -1848,9 +1848,14 @@ window.addEventListener('hashchange', () => {
 if (location.hash.startsWith('#/edit/')) selectPath(decodeURIComponent(location.hash.slice(7)));
 
 // 侧栏每次出现（手机点开 / 宽屏常驻首帧）：一次新的拉开，重置滚动保护并定位。
+// #69 起「☰」在宽屏兼作收起，所以只在点完真的看得见侧栏时才当一次「拉开」——
+// layout.js 的点击监听先于这里（initLayout 在本文件靠前处调用），此时 hidden 已是新值。
 document.addEventListener('click', (e) => {
   const t = e.target;
-  if (t && t.closest && t.closest('[data-shell="open"]')) notifySidebarShown();
+  if (!t || !t.closest || !t.closest('[data-shell="open"]')) return;
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar && sidebar.hidden) return; // 这一次是收起，不是拉开
+  notifySidebarShown();
 });
 notifySidebarShown();
 
