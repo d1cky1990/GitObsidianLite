@@ -4,6 +4,10 @@
 // layout.js。抽出来是为了让工单第 1/5/6/7 条能有单测钉住（真浏览器验不了的
 // 部分，至少逻辑层不许错）。词汇见 GLOSSARY.md。
 
+// 「编辑 / 冲突态」这条判据只住在 editor-guard.js 一处（#66 的置灰也读它）——
+// 这里要用它，就引过来，不另抄一份 isLockedMode。
+import { isLockedMode } from './editor-guard.js';
+
 export const SIDEBAR_BREAKPOINT = 900;
 
 /**
@@ -50,6 +54,12 @@ export function parseHash(hash) {
   return { kind: 'empty', path: '' };
 }
 
+/** 地址栏指向的那篇笔记（不是笔记链接就给空串）——几处比「是不是同一篇」都读这一处。 */
+function notePathIn(hash) {
+  const parsed = parseHash(hash);
+  return parsed.kind === 'note' ? parsed.path : '';
+}
+
 /** 侧栏滑出压一条占位历史：地址栏不变，state 里只放一个标记。 */
 export function pushSidebarPlaceholder(state) {
   state.placeholderDepth += 1;
@@ -66,9 +76,16 @@ export function popSidebarPlaceholder(state) {
 /**
  * 返回四层：系统返回 ＝ 界面「‹ 返回」＝ 关掉这篇；侧栏开着先收侧栏；
  * 编辑态退出编辑（有改动先问）；冲突态退回编辑。旧「返回＝回目录」作废。
+ *
+ * #74：**编辑 / 冲突态里侧栏不算一层**。窄屏这两个态侧栏是锁死的（☰ 换成「退出编辑」），
+ * 宽屏它常驻——都不是用户刚拉开的那一层；先「收侧栏」再 return 会把那一问整个吞掉。
  */
+export function sidebarCountsAsBackLayer(state = {}) {
+  return !!state.sidebarOpen && !isLockedMode(state.mode || 'read');
+}
+
 export function decideBack(state) {
-  if (state.sidebarOpen) return 'close-sidebar';
+  if (sidebarCountsAsBackLayer(state)) return 'close-sidebar';
   if (state.mode === 'conflict') return 'conflict-to-edit';
   if (state.mode === 'edit') return 'exit-edit';
   if (state.openedPath) return 'close-note';
@@ -195,7 +212,26 @@ export function landingProbeFromIndex(notePaths) {
  */
 export function isNoteSwitchOnPopstate(state = {}, hash = '') {
   if ((state.mode || 'read') !== 'read') return false;
-  const parsed = parseHash(hash);
-  if (parsed.kind !== 'note') return false;
-  return parsed.path !== (state.openedPath || '');
+  const path = notePathIn(hash);
+  if (!path) return false;
+  return path !== (state.openedPath || '');
+}
+
+/* ---------- #74：编辑态的系统返回，得先把退掉的那一步拽回来 ------------------
+
+   病根一句话：**按返回这件事，在弹窗之前就已经做完了**——历史退了一条，程序这时才问
+   「放弃改动？」，那个「取消」于是成了空头支票。修法与判定为什么这样下，写在 spec.md
+   「地址栏只记右边是哪篇」下面（一个事实只住一处）；这里只留一个必须单测得住的判定。 */
+
+/**
+ * 这次 hashchange 是不是「正在编辑的这一篇指回了它自己」。
+ *
+ * 历史被拽回来之后，浏览器还会把那次退格排队的 hashchange 派发一次；地址栏此时
+ * 已经是这篇的编辑地址，若照常走 openFile，编辑器和草稿会被一次「重新打开」冲掉
+ * （打开会把 draft 换成文件正文、把态切回阅读）。这一下不算打开，直接跳过。
+ * @param {{mode?:string, editingPath?:string}} state editingPath ＝ 正在编辑的那篇
+ */
+export function isSameEditedNote(state = {}, hash = '') {
+  if (!isLockedMode(state.mode)) return false;
+  return notePathIn(hash) === (state.editingPath || '') && !!state.editingPath;
 }

@@ -14,6 +14,7 @@ import {
   pushSidebarPlaceholder, popSidebarPlaceholder,
   decideBack, resolveLanding, CLOSE_NOTE_HREF, backDirective,
   indexDirExists, landingProbeFromIndex, isNoteSwitchOnPopstate,
+  isSameEditedNote, sidebarCountsAsBackLayer,
 } from './navigation.js';
 
 test('三个词各自独立：改一个不串到另两个', () => {
@@ -79,8 +80,21 @@ test('返回四层：侧栏先收 → 冲突退编辑 → 编辑退出 → 关�
   setOpenedPath(s, 'a.md');
 
   s.sidebarOpen = true;
+  s.mode = 'read';
+  assert.equal(decideBack(s), 'close-sidebar', '阅读态侧栏开着，返回只收侧栏、不动笔记');
+
+  // #74：编辑 / 冲突态里侧栏锁死（窄屏）或常驻（宽屏），不是用户刚拉开的那一层。
+  // 照旧先「收侧栏」会把编辑态那一问整个吞掉——宽屏实测：笔记随侧栏一起没了、连问都没问。
+  s.mode = 'edit';
+  assert.equal(decideBack(s), 'exit-edit', '编辑态侧栏不算一层：得走到「有改动先问」');
   s.mode = 'conflict';
-  assert.equal(decideBack(s), 'close-sidebar', '侧栏开着，返回只收侧栏、不动笔记');
+  assert.equal(decideBack(s), 'conflict-to-edit', '冲突态同理');
+
+  assert.equal(sidebarCountsAsBackLayer({ sidebarOpen: true, mode: 'read' }), true);
+  assert.equal(sidebarCountsAsBackLayer({ sidebarOpen: true, mode: 'edit' }), false);
+  assert.equal(sidebarCountsAsBackLayer({ sidebarOpen: true, mode: 'conflict' }), false);
+  assert.equal(sidebarCountsAsBackLayer({ sidebarOpen: false, mode: 'edit' }), false);
+  assert.equal(sidebarCountsAsBackLayer({}), false, '没有侧栏开着时永远不算一层');
 
   s.sidebarOpen = false;
   s.mode = 'conflict';
@@ -137,11 +151,15 @@ test('评审修复第1条：返回四层落地指令，close-note 地址栏恒�
   const s = createNavState();
   setOpenedPath(s, '日记/2026/a.md');
 
-  s.sidebarOpen = true; s.mode = 'conflict';
+  s.sidebarOpen = true; s.mode = 'read';
   let d = backDirective(s);
-  assert.equal(d.decision, 'close-sidebar', '侧栏开着先收侧栏（layout 负责）');
+  assert.equal(d.decision, 'close-sidebar', '阅读态侧栏开着先收侧栏（layout 负责）');
   assert.equal(d.href, '');
   assert.equal(d.historyOp, 'none');
+
+  // #74：编辑 / 冲突态里侧栏不算一层（锁死 / 常驻），照旧先收会把那一问吞掉
+  s.sidebarOpen = true; s.mode = 'conflict';
+  assert.equal(backDirective(s).decision, 'conflict-to-edit');
 
   s.sidebarOpen = false; s.mode = 'conflict';
   assert.equal(backDirective(s).decision, 'conflict-to-edit');
@@ -242,4 +260,23 @@ test('#72：编辑 / 冲突态一律不算换篇——那两个态里每一次�
   // 这不是「换篇」而是「返回」——要先问「放弃改动？」，不许悄悄把草稿丢掉。
   assert.equal(isNoteSwitchOnPopstate({ openedPath: '笔记/另一篇.md', mode: 'edit' }, otherHash), false);
   assert.equal(isNoteSwitchOnPopstate({ openedPath: '笔记/另一篇.md', mode: 'conflict' }, otherHash), false);
+});
+
+/* ---------- #74：编辑态按系统返回，先把退掉的那一步拽回来，再问 ---------- */
+
+test('#74：正在编辑的这一篇指回它自己，不算一次新的打开', () => {
+  const hash = '#/edit/' + encodeURIComponent('笔记/短篇.md');
+
+  // 历史被拽回来之后，浏览器还会把那次退格排队的 hashchange 派发一次。
+  // 地址栏此刻已经是这篇的编辑地址——照常走 openFile 会把编辑器和草稿一起冲掉。
+  const editing = { mode: 'edit', editingPath: '笔记/短篇.md' };
+
+  assert.equal(isSameEditedNote(editing, hash), true);
+  assert.equal(isSameEditedNote({ ...editing, mode: 'conflict' }, hash), true, '冲突态同样不许被重开');
+
+  // 其余一律不算：别把正常的打开吞掉
+  assert.equal(isSameEditedNote({ ...editing, mode: 'read' }, hash), false, '阅读态是正常打开');
+  assert.equal(isSameEditedNote({ ...editing, editingPath: '笔记/长篇.md' }, hash), false, '编辑 A 时地址栏指 B：这是要换篇');
+  assert.equal(isSameEditedNote(editing, '#/'), false, '回根不是同一篇');
+  assert.equal(isSameEditedNote({ ...editing, editingPath: '' }, hash), false, '没有正在编辑的那篇就不算');
 });

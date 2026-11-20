@@ -64,7 +64,10 @@ import './style.css';
 // 骨架 HTML 与开合接线在 layout.js，由下面 initLayout() 一处接好。
 import { initLayout, SIDEBAR_BREAKPOINT } from './layout.js';
 // 评审修复第 1 条：返回四层落地（纯决策与地址栏落点在 navigation.js，DOM 接线在本文件）
-import { CLOSE_NOTE_HREF, backDirective, resolveLanding, landingProbeFromIndex } from './navigation.js';
+import {
+  CLOSE_NOTE_HREF, backDirective, resolveLanding, landingProbeFromIndex, noteHref,
+  isSameEditedNote,
+} from './navigation.js';
 import { getSelectedFolder, initTree, selectPath, setSelectedFolder, refreshTree, notifySidebarShown } from './tree.js';
 // #64 空状态与阅读态四档失败：规则层 recent.js + 落位层 render-states.js。
 // 只在这里 import 与下面几处接线，不动 md 实例与插件顺序、不动正文渲染。
@@ -645,6 +648,10 @@ function navigate() {
   // （#64 判据 3：断网时空状态也不弹提示）。exists 对这两类 hash 不会被调用。
   const landing = resolveLanding({ hash: location.hash, exists: probe.exists, online: true });
   if (landing.kind === 'note') {
+    // #74：编辑器里还开着、草稿还没保存的这一篇，地址栏指回它自己**不是一次新的打开**。
+    // 编辑态按系统返回、历史被拽回来之后，浏览器会为那次退格补派一次 hashchange；
+    // 照常走 openFile 会把 draft 换成文件正文、把态切回阅读——编辑器和刚打的字一起没了。
+    if (isSameEditedNote({ mode: state.mode, editingPath: state.path }, location.hash)) return;
     // F-13：分享链接落阅读态、侧栏关着。openFile() 不改 hash / 不碰侧栏；窄屏侧栏
     // 默认关（layout initLayout 的 isWide() && !collapsed），宽屏常驻是骨架定稿
     // G-6，不强行关。正文渲染一字不改。
@@ -2006,7 +2013,7 @@ document.addEventListener('ui:target-fix-here', () => { openCreate({ skipCheck: 
     「放弃改动？」用原生 confirm（逐字文案由守卫给出），node 无 DOM 时安全退化。 */
 configureEditorGuard({
   getMode: () => state.mode,
-  getDirty: () => (state.file ? hasUnsavedChanges(state.draft, state.file.content) : false),
+  getDirty: () => isDirty(),
   confirm: (msg) => (typeof window !== 'undefined' && typeof window.confirm === 'function'
     ? !!window.confirm(msg) : false),
 });
@@ -2078,12 +2085,59 @@ function syncEditorChrome() {
   if (actions) actions.hidden = !(state.view === 'editor' && !state.readState && !state.emptyActive);
 }
 
-/** 退出编辑 / 点取消：有改动先问「放弃改动？」；确认才丢草稿回阅读态，取消留编辑态、草稿原样。 */
+/** 草稿与「进入编辑那一刻」的基准有没有差——只在这一处算，别在四处分头抄一份。
+    守卫的「放弃改动？」判定与系统返回的「要不要先复原历史」读的是同一个答案。 */
+function isDirty() {
+  return state.file ? hasUnsavedChanges(state.draft, state.file.content) : false;
+}
+
+/** 确认放弃：把草稿丢回文件正文。三个入口（退出编辑 / 系统返回 / 点别的篇被拦）共用这里。 */
+function dropDraft() {
+  if (state.file) state.draft = state.file.content;
+}
+
+/** 退出编辑 / 点取消：有改动先问「放弃改动？」；确认才丢草稿回阅读态，取消留编辑态、草稿原样。
+    这条是**界面发起**的（「‹ 退出编辑」、点别的篇被拦住）：不碰历史，所以也没有要复原的东西。 */
 function exitEdit() {
-  if (!guardExitEdit()) return;                       // 取消：留编辑态、草稿一字不差
-  if (state.file) state.draft = state.file.content;  // 确认：丢草稿
-  backToRead();                                      // #60：这一刻补发那篇没送到的勾选
+  if (!guardExitEdit()) return;   // 取消：留编辑态、草稿一字不差
+  dropDraft();
+  backToRead();                   // #60：这一刻补发那篇没送到的勾选
   render();
+}
+
+/**
+ * #74：**系统返回**发起的退出编辑。与上面那条的唯一区别是——多了一次已经发生的返回。
+ *
+ * 弹「放弃改动？」之前，浏览器已经把历史退了一条；这时点「取消」什么也保不住（编辑器
+ * 连着草稿一起没了）。所以顺序倒过来：先把那一步收回来、再问。规则本身住在
+ * spec.md「地址栏只记右边是哪篇」那条下面（一个事实只住一处），这里只说怎么落地。
+ *
+ * 「放弃」之后为什么不用另带标记：草稿当场就丢了，所以下一次 popstate 报的「没有改动可问」
+ * 是实话——先复原那一步不会再把这一条拽回来，也不会问第二遍。状态本身就是那个标记。
+ */
+function backExitEdit() {
+  if (!isDirty()) { exitEdit(); return; }   // 没改动：照旧直接退，不碰历史、不多问一次
+  restoreEditHistory();
+  if (!guardExitEdit()) return;   // 取消：人还在编辑态、草稿在、地址栏还是这篇
+  dropDraft();
+  try {
+    // 真退一层。此刻态仍是编辑态、但已经没有改动可问，那一次 popstate 会安安静静走
+    // 「退出编辑」；侧栏也照旧按四层的规矩算，不会因为这一下被顺手收起。
+    history.back();
+  } catch (_) {
+    backToRead(); render();   // 老环境退不了：留在本篇阅读态，总比把草稿留在屏幕上强
+  }
+}
+
+/** 把当前这条历史钉成「这篇的编辑地址」——被系统返回退掉的那一步收回来。
+    不 push 的话下一次返回会把这条笔记也一起退掉；不 replace 是因为要留得住退路。 */
+function restoreEditHistory() {
+  const href = noteHref(state.path);
+  try {
+    history.pushState({}, '', location.pathname + location.search + href);
+  } catch (_) {
+    location.hash = href;   // 老环境退回改 hash：hashchange 会被 isSameEditedNote 认出来，不重开
+  }
 }
 
 /** C-4：冲突态按返回 → 退回编辑态、草稿原样、不加提示（每次只退一层）。 */
@@ -2118,8 +2172,11 @@ function currentOpenedPath() {
     派发到这里时侧栏已收起，故只传 sidebarOpen:false，让指令判剩下三层。 */
 document.addEventListener('ui:back', () => {
   const d = backDirective({ mode: state.mode, openedPath: currentOpenedPath(), sidebarOpen: false });
-  if (d.decision === 'conflict-to-edit') { conflictBackToEdit(); return; }
-  if (d.decision === 'exit-edit') { exitEdit(); return; }
+  // #74：冲突态同理——那一步历史也得收回来，否则排队的 hashchange 会把这一篇连同
+  // 合并到一半的草稿一起关掉。冲突态里侧栏同样不算一层（见 sidebarCountsAsBackLayer）。
+  if (d.decision === 'conflict-to-edit') { restoreEditHistory(); conflictBackToEdit(); return; }
+  // #74：只有「系统返回」这一条要先复原历史再问；界面上的「退出编辑」走 exitEdit()。
+  if (d.decision === 'exit-edit') { backExitEdit(); return; }
   if (d.decision === 'close-note') { closeNote(d.href); return; }
   // 'none'（空状态 / 没打开笔记）：不再退，也不制造「按了没反应」的假象。
 });
@@ -2142,7 +2199,7 @@ document.addEventListener('click', (e) => {
   e.stopPropagation();                 // 也挡住 #63 openPath / 大分发器再改一次 hash
   if (hasUnsavedChanges(state.draft, state.file ? state.file.content : '')) {
     if (!guardExitEdit()) return;      // 取消：留编辑态、草稿原样、不导航
-    if (state.file) state.draft = state.file.content;
+    dropDraft();
     backToRead();
   } else {
     toast(EDIT_COPY.lockedHint);       // 没改动也拦住并说明原因

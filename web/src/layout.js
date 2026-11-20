@@ -15,7 +15,7 @@ import { icon } from './icons.js';
 import { applyTheme } from './theme.js';
 import {
   SIDEBAR_BREAKPOINT, createNavState, pushSidebarPlaceholder, popSidebarPlaceholder,
-  parseHash, decideBack, isNoteSwitchOnPopstate,
+  parseHash, decideBack, isNoteSwitchOnPopstate, sidebarCountsAsBackLayer,
 } from './navigation.js';
 
 export { SIDEBAR_BREAKPOINT };
@@ -211,7 +211,12 @@ export function initLayout(deps = {}) {
   // 目标篇打不开）。判定读注入的真值（开的是哪篇 / 什么态），理由见 isNoteSwitchOnPopstate。
   window.addEventListener('popstate', () => {
     if (isNoteSwitchOnPopstate({ openedPath: openedPathOf(), mode: modeOf() }, location.hash)) return;
-    if (state.sidebarOpen) { closeSidebar({ fromSystemBack: true }); return; }
+    // #74：编辑 / 冲突态里侧栏不是「用户刚拉开的那一层」（窄屏锁死、宽屏常驻）。
+    // 这一下若照旧当成「收侧栏」再 return，编辑态那一问会被整个吞掉——实测宽屏按返回
+    // 只把侧栏收掉、笔记随之一并没了，连「放弃改动？」都不弹。判据在 navigation.js。
+    if (sidebarCountsAsBackLayer({ sidebarOpen: state.sidebarOpen, mode: modeOf() })) {
+      closeSidebar({ fromSystemBack: true }); return;
+    }
     const decision = decideBack(state);
     try {
       document.dispatchEvent(new CustomEvent('ui:back', { detail: { decision } }));
