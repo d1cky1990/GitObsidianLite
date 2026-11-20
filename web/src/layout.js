@@ -66,10 +66,9 @@ export function shellHtml() {
     '    <button id="btn-open" class="icon-btn" data-shell="open" aria-label="打开侧栏">' + icon('sidebar-open') + '</button>',
     // 关闭键在侧栏外面、正文区靠左：窄屏贴侧栏边缘外侧，宽屏在「☰」旁边。
     '    <button id="btn-close" class="icon-btn" data-shell="close" aria-label="关闭侧栏" hidden>' + icon('close') + '</button>',
-    // #71：篇名左边那截父目录。独立节点、只放「最近一级目录」，根下的笔记整块
-    // hidden（省掉一根孤零零的斜杠）。斜杠由 CSS ::after 画在目录后面——目录被
-    // 省略号吃掉时斜杠跟着消失，不会留下「… / 篇名」这种半截话。
-    '    <span class="topbar-crumb" id="doc-crumb" hidden></span>',
+    // #71：篇名左边那截父目录，独立节点、初始 hidden（文字由 syncEditorChrome 写）。
+    // 斜杠是 CSS 的 ::after——见 style.css 那条注释。
+    '    <span class="topbar-parent" id="doc-parent" hidden></span>',
     '    <span class="topbar-title" id="doc-title"></span>',
     '    <button id="btn-more" class="icon-btn" data-shell="more" aria-label="更多操作">' + icon('more') + '</button>',
     '  </header>',

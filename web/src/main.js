@@ -8,7 +8,7 @@ import {
 } from './wikilinks.js';
 import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf,
-  crumbOf, commitMessage,
+  lastDirOf, commitMessage,
 } from './file-names.js';
 // #66 文件操作规则层：逐字文案、弹窗模型、常驻浮层骨架、树行入口判定、核对事件。
 // 规则层在独立模块；但本文件仍有 #66 的接线与改造——文件开头的
@@ -2036,21 +2036,22 @@ function syncEditorChrome() {
   // 全名（含 .md）留在 title 上——长名字被省略号截断时还能悬停看全。
   // 只在这篇真的打开了的时候写：读失败 / 加载中 / 空状态都不挂上一页的名字。
   //
-  // #71：篇名左边补一截父目录（`父目录 / 篇名`）。只取最近一级（票里选的 ①），
-  // 根下的笔记整块藏起来（不画孤零零的斜杠）。两格的判据是同一个 noteOpen——
-  // 各写一套迟早会出现「有目录没篇名」这种半截顶栏。
+  // #71：篇名左边补一截父目录（`父目录 / 篇名`）。「取最近一级」这条规则住在
+  // file-names.js 的 lastDirOf 里，这里只负责往两格上写；根下那篇拿到空串，
+  // 于是整块藏起来（不画孤零零的斜杠）。两格共用同一个 noteOpen——各写一套迟早
+  // 会出现「有目录没篇名」这种半截顶栏。
   const noteOpen = state.view === 'editor' && !state.readState && !state.emptyActive && !!state.path;
-  const crumb = noteOpen ? crumbOf(state.path) : { dir: '', name: '' };
-  const crumbEl = document.getElementById('doc-crumb');
-  if (crumbEl) {
-    crumbEl.textContent = crumb.dir;
-    crumbEl.hidden = !crumb.dir;
+  const dir = noteOpen ? lastDirOf(state.path) : '';
+  const dirEl = document.getElementById('doc-parent');
+  if (dirEl) {
+    dirEl.textContent = dir;
+    dirEl.hidden = !dir;
     // 悬停看全：目录那截被省略号截断时，指上去还是能读到完整的一级目录名
-    crumbEl.title = crumb.dir;
+    dirEl.title = dir;
   }
   const titleEl = document.getElementById('doc-title');
   if (titleEl) {
-    titleEl.textContent = crumb.name;
+    titleEl.textContent = noteOpen ? stemOf(state.path) : '';
     titleEl.title = noteOpen ? baseOf(state.path) : '';
   }
   // 评审修复第 5 条：「⋯」主入口（骨架 #btn-more）与旧菜单同一锁判定——

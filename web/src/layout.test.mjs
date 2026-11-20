@@ -24,7 +24,7 @@ test('骨架容器齐：侧栏三块内容容器、正文内容区、遮罩、�
     'sidebar', 'sidebar-title', 'search-toggle', 'search-row', 'sidebar-q', 'sidebar-q-clear',
     'sidebar-content', 'tree-view', 'search-results', 'settings-view',
     'sidebar-foot', 'btn-new', 'btn-settings',
-    'scrim', 'main', 'btn-open', 'btn-close', 'doc-crumb', 'doc-title', 'btn-more',
+    'scrim', 'main', 'btn-open', 'btn-close', 'doc-parent', 'doc-title', 'btn-more',
     'app', 'edit-actions', 'toast-host',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `骨架缺 #${id}`);
@@ -46,7 +46,7 @@ test('输入节点常驻、有/没有切 hidden，不靠增删节点', () => {
   // 这几块初始收起，靠 hidden 切（作者样式里带 display 的会盖掉默认，style.css 补 !important）
   for (const id of [
     'sidebar', 'scrim', 'search-row', 'btn-close', 'edit-actions',
-    'search-results', 'settings-view', 'doc-crumb',
+    'search-results', 'settings-view', 'doc-parent',
   ]) {
     const re = new RegExp(`<[^>]*id="${id}"[^>]*>`);
     const m = html.match(re);

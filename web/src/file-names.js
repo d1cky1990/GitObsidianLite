@@ -81,17 +81,14 @@ export function stemOf(path) {
 }
 
 /**
- * 顶栏中间那格：「父目录 / 篇名」两截（#71）。
+ * 最近一级父目录：`长目录名一/长目录名二/篇名.md` → `长目录名二`；根下的 → ''。
  *
- * 只取**最近一级**父目录，不铺整条路径——390 宽下中间只剩 270px 左右，
- * 深目录全铺出来篇名就没位置了（#71 三个候选里选的 ①，另两个否决理由在票里）。
- * 根下的笔记 `dir` 是空串，界面靠它决定「不画那根斜杠」。
- * 篇名与树行、搜索结果同口径：去 `.md`，大小写不敏感。
+ * 顶栏中间那格要的就是这一级（#71 三个候选里选的 ①）：390 宽下中间只剩 270px
+ * 左右，整条路径铺出来篇名就没位置了。**这是「取最后一级」，不等于「完整父目录」**
+ * ——完整的那一份仍是 dirOf。根下返回空串，界面靠它决定「不画那根斜杠」。
  */
-export function crumbOf(path) {
-  const dir = dirOf(path);
-  const i = dir.lastIndexOf('/');
-  return { dir: i < 0 ? dir : dir.slice(i + 1), name: stemOf(path) };
+export function lastDirOf(path) {
+  return baseOf(dirOf(path));
 }
 
 /**
