@@ -125,7 +125,11 @@ installFrontmatterRule(md);
 // 骨架只建一次（mountShell 幂等）：注入 #shell 里的两栏 DOM（含 #app），应用
 // 主题第一帧之后那次读取，接好侧栏开合 / 占位历史 / 返回四层。必须在取 #app
 // 之前跑——index.html 现在只留 #shell 容器，#app 由骨架生成。
-initLayout();
+//
+// 两个取值器把「开的是哪篇」「什么态」的真相交给骨架层（#72）：它要拿这两个
+// 判一次 popstate 是「换篇」还是「用户按了返回」。取值器在那之后才被调用
+// （popstate 来的时候），所以此刻 state 还没建好不要紧。
+initLayout({ getOpenedPath: currentOpenedPath, getMode: () => state.mode });
 
 const app = document.getElementById('app');
 
@@ -2100,16 +2104,20 @@ if (layerBackBtn) {
   });
 }
 
+/** 正文区现在真的是哪一篇（空＝没打开笔记）。空状态 / 阅读失败态传空，
+    免得按一次返回也 replace 一次地址栏。骨架层的 #72 判定也读这一处，
+    两边各写一套迟早会说两种话（就是 #72 那类毛病）。 */
+function currentOpenedPath() {
+  return (state.view === 'editor' && !state.emptyActive && !state.readState) ? state.path : '';
+}
+
 /** 系统返回 / 界面返回（layout.js 派发 ui:back）：按真实 mode 每次退一层。
     评审修复第 1 条：四层落地指令在 navigation.js 的 backDirective()（可单测），
     这里按 main 的真实 state.mode 判，不读 layout 的 detail.decision（它自己的
     navState.mode 未必同步）。侧栏开着那一层由 layout 的 popstate 自己先收，
     派发到这里时侧栏已收起，故只传 sidebarOpen:false，让指令判剩下三层。 */
 document.addEventListener('ui:back', () => {
-  // 空状态 / 阅读失败态时 openedPath 传空，避免按系统返回也 replace 一次。
-  const openedPath = (state.view === 'editor' && !state.emptyActive && !state.readState)
-    ? state.path : '';
-  const d = backDirective({ mode: state.mode, openedPath, sidebarOpen: false });
+  const d = backDirective({ mode: state.mode, openedPath: currentOpenedPath(), sidebarOpen: false });
   if (d.decision === 'conflict-to-edit') { conflictBackToEdit(); return; }
   if (d.decision === 'exit-edit') { exitEdit(); return; }
   if (d.decision === 'close-note') { closeNote(d.href); return; }

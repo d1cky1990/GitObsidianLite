@@ -175,3 +175,27 @@ export function landingProbeFromIndex(notePaths) {
     exists: (dir) => indexDirExists(notePaths, dir) === true,
   };
 }
+
+/* ---------- #72：站内换了一篇，别当成「用户按了系统返回」 --------------------
+
+   为什么这次 popstate 不是返回、以及这个浏览器的脾气，写在 README「只存在于屏幕上的
+   那些行为，怎么验」那条里（一个事实只住一处）；这里只说判定怎么下。
+
+   怎么分辨：**只读地址栏与「打开的那篇」的差**，不读事件里的 state——站内跳转那条
+   历史记录没有状态标记，读它一定读成 null。
+   编辑 / 冲突态一律不算换篇：那两个态里每一次返回都只退一层，有改动还得先问
+   「放弃改动？」。一条 popstate 若被判成换篇就会绕过那一问，草稿悄悄没了。 */
+
+/**
+ * 这次 popstate 指向的是不是另一篇笔记（是＝换篇，交给路由去打开）。
+ * @param {{openedPath?:string, mode?:'read'|'edit'|'conflict'}} state
+ *        openedPath ＝ 正文区现在真的是哪一篇（空＝没打开笔记）；
+ *        mode ＝ 现在的态。两个都由接线层注入真实值，别拿 navState 里的镜像当真相。
+ * @param {string} hash 地址栏当前 hash
+ */
+export function isNoteSwitchOnPopstate(state = {}, hash = '') {
+  if ((state.mode || 'read') !== 'read') return false;
+  const parsed = parseHash(hash);
+  if (parsed.kind !== 'note') return false;
+  return parsed.path !== (state.openedPath || '');
+}

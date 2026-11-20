@@ -15,7 +15,7 @@ import { icon } from './icons.js';
 import { applyTheme } from './theme.js';
 import {
   SIDEBAR_BREAKPOINT, createNavState, pushSidebarPlaceholder, popSidebarPlaceholder,
-  parseHash, decideBack,
+  parseHash, decideBack, isNoteSwitchOnPopstate,
 } from './navigation.js';
 
 export { SIDEBAR_BREAKPOINT };
@@ -110,13 +110,21 @@ export function showSidebarView(name, doc) {
  * main.js 唯一的接线入口：注入骨架 → 应用主题（system 时挂系统外观监听）→
  * 侧栏开合 / 三块内容切换 / 占位历史 / 返回四层。只操作骨架层，
  * 不碰 #app 内容与勾选队列。
+ *
+ * deps（#72 起的两个取值器，不传就退回本模块自己的 navState 镜像）：
+ *  - getOpenedPath()：正文区现在真的是哪一篇（空＝没打开笔记）
+ *  - getMode()：现在是什么态（read / edit / conflict）
+ * 「哪一篇开着」与「什么态」的真相在 main.js，本模块的 navState 只是镜像，
+ * 可能滞后（#65 的提醒）；要据此下判断的（比如把 popstate 认成换篇）就读注入的。
  */
-export function initLayout() {
+export function initLayout(deps = {}) {
   const app = mountShell();
   applyTheme(); // 主程序启动后读同一份记录；与 index.html 内联脚本互为镜像
   if (!app || typeof document === 'undefined') return null;
 
   const state = createNavState();
+  const openedPathOf = typeof deps.getOpenedPath === 'function' ? deps.getOpenedPath : () => state.openedPath;
+  const modeOf = typeof deps.getMode === 'function' ? deps.getMode : () => state.mode;
   const isWide = () => typeof globalThis.matchMedia === 'function' &&
     globalThis.matchMedia('(min-width: ' + SIDEBAR_BREAKPOINT + 'px)').matches;
   const el = (id) => document.getElementById(id);
@@ -196,7 +204,13 @@ export function initLayout() {
 
   // 侧栏开着按系统返回：先收侧栏、不动笔记。侧栏没开时把四层决策派发出去，
   // 由 #64/#65 接 ui:back 去真正「关掉这篇 / 退出编辑 / 退回编辑」。
+  //
+  // #72：点正文双链换篇时，这个浏览器也会发一次 popstate（脾气写在 README 那条里）。
+  // 先认一下地址栏指的是不是另一篇——是就不当返回：交给 hashchange → navigate()
+  // 正常打开，绝不派发 ui:back（派发了会被判成「关掉这篇」，地址栏 replace 回根、
+  // 目标篇打不开）。判定读注入的真值（开的是哪篇 / 什么态），理由见 isNoteSwitchOnPopstate。
   window.addEventListener('popstate', () => {
+    if (isNoteSwitchOnPopstate({ openedPath: openedPathOf(), mode: modeOf() }, location.hash)) return;
     if (state.sidebarOpen) { closeSidebar({ fromSystemBack: true }); return; }
     const decision = decideBack(state);
     try {
@@ -205,11 +219,13 @@ export function initLayout() {
   });
 
   // 点开一篇笔记，手机上侧栏自动收（关法之三）；地址栏只跟那篇变。
+  // #72：宽屏侧栏是常驻的（#69 定稿），点开一篇不该把它算成「关掉了」——窄屏才收，
+  // 否则 state 说关了、侧栏还立在屏上，☰ 会变成「打开侧栏」而那一下看不出反应。
   window.addEventListener('hashchange', () => {
     const parsed = parseHash(location.hash);
     if (parsed.kind === 'note') {
       state.openedPath = parsed.path;
-      if (state.sidebarOpen) {
+      if (state.sidebarOpen && !isWide()) {
         popSidebarPlaceholder(state);
         state.sidebarOpen = false;
         updateVisibility();

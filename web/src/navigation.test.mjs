@@ -13,7 +13,7 @@ import {
   createTarget, noteHref, parseHash,
   pushSidebarPlaceholder, popSidebarPlaceholder,
   decideBack, resolveLanding, CLOSE_NOTE_HREF, backDirective,
-  indexDirExists, landingProbeFromIndex,
+  indexDirExists, landingProbeFromIndex, isNoteSwitchOnPopstate,
 } from './navigation.js';
 
 test('三个词各自独立：改一个不串到另两个', () => {
@@ -208,4 +208,38 @@ test('评审修复第2条：resolveLanding 接上名单判定——不在逐级�
   assert.ok(o.message.includes('连不上'), '问不到说连不上');
   assert.ok(!o.message.includes('找不到'), '不许说找不到');
   assert.ok(!o.message.includes('不在了'), '问不到不冒充不在了');
+});
+
+/* ---------- #72：站内换了一篇，别当成「用户按了系统返回」 ---------- */
+
+test('#72：阅读态、地址栏指向另一篇 → 这次 popstate 是换篇，不是返回', () => {
+  const opened = { openedPath: '笔记/短篇.md', mode: 'read' };
+
+  assert.equal(
+    isNoteSwitchOnPopstate(opened, '#/edit/' + encodeURIComponent('笔记/双链指向的那篇.md')),
+    true,
+    '点正文双链换了一篇：要交给路由打开，不许当返回把当前这篇关掉',
+  );
+});
+
+test('#72：还是当前这篇 / 回根 / 回目录 → 照旧是返回，别把返回吞掉', () => {
+  const opened = { openedPath: '笔记/短篇.md', mode: 'read' };
+
+  // 系统返回退「当前这一条」时地址栏不变，或者变成根 / 旧目录：都得按返回四层走
+  assert.equal(isNoteSwitchOnPopstate(opened, '#/edit/' + encodeURIComponent('笔记/短篇.md')), false, '同一篇不是换篇');
+  assert.equal(isNoteSwitchOnPopstate(opened, '#/'), false, '回根是返回');
+  assert.equal(isNoteSwitchOnPopstate(opened, ''), false, '没 hash 也是回根');
+  assert.equal(isNoteSwitchOnPopstate(opened, '#/dir/' + encodeURIComponent('笔记')), false, '旧目录链接不是换篇');
+
+  // 什么都没打开时地址栏冒出一篇：更不是「关掉这篇」，交给路由打开即可
+  assert.equal(isNoteSwitchOnPopstate({ openedPath: '', mode: 'read' }, '#/edit/' + encodeURIComponent('a.md')), true);
+});
+
+test('#72：编辑 / 冲突态一律不算换篇——那两个态里每一次返回都只退一层（有改动先问）', () => {
+  const otherHash = '#/edit/' + encodeURIComponent('笔记/另一篇.md');
+
+  // 读 A → 点双链到 B → 在 B 上编辑 → 按系统返回（地址栏回到 A）：
+  // 这不是「换篇」而是「返回」——要先问「放弃改动？」，不许悄悄把草稿丢掉。
+  assert.equal(isNoteSwitchOnPopstate({ openedPath: '笔记/另一篇.md', mode: 'edit' }, otherHash), false);
+  assert.equal(isNoteSwitchOnPopstate({ openedPath: '笔记/另一篇.md', mode: 'conflict' }, otherHash), false);
 });
