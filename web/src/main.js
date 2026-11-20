@@ -2044,8 +2044,16 @@ function syncEditorChrome() {
   // 评审修复第 5 条：「⋯」主入口（骨架 #btn-more）与旧菜单同一锁判定——
   // 编辑 / 冲突态置灰但仍能按（不 disable），点开后的三个动作与「先保存或取消，
   // 再改文件」锁提示由 renderOps() / [data-op] 按 isLocked() 处理，不另造一套判定。
+  //
+  // #70：没有「打开的那篇」时把它整个藏掉（空状态 / 阅读失败 / 目录页）。判据与上面
+  // 那格篇名**同一个 noteOpen**——两边各写一套迟早会说两种话。用 hidden 属性（不是删
+  // 节点：骨架只建一次），.icon-btn[hidden] 的 !important 负责盖掉作者样式的 display；
+  // 藏起来的按钮既不在版面上、也进不了键盘序列。
   const moreBtn = document.getElementById('btn-more');
-  if (moreBtn && moreBtn.classList) moreBtn.classList.toggle('is-disabled', isLocked());
+  if (moreBtn) {
+    moreBtn.hidden = !noteOpen;
+    if (moreBtn.classList) moreBtn.classList.toggle('is-disabled', isLocked());
+  }
   const actions = document.getElementById('edit-actions');
   if (actions) actions.hidden = !(state.view === 'editor' && !state.readState && !state.emptyActive);
 }

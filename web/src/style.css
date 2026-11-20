@@ -942,10 +942,18 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
 .settings-h { margin: 0 0 var(--space-3); font-size: 15px; font-weight: 600; color: var(--color-text); }
 .settings-note { margin: var(--space-2) 0 0; font-size: 13px; line-height: 20px; color: var(--color-text-secondary); }
 
-/* 黑白三档分段选择器：每段 ≥44px，当前档一眼看得出（底 + 字 + 边框，不只换颜色） */
+/* 黑白三档分段选择器：每段 ≥44px，当前档一眼看得出（底 + 字 + 边框，不只换颜色）。
+   #70：三段**按字数分宽**，不搞三等分。窄屏侧栏是 75vw，390 宽下内容区 259.5px，
+   三等分给每段 83.8px，减掉左右 12px 内边距与 2px 边框只剩 57.8px——「跟随系统」
+   四个字要 60px，正好挤掉一个「统」（实测 320 / 390 都折成两行，430 才放过）。
+   于是 flex-basis 回到内容宽（auto）＋允许伸展：短的「白 / 黑」各让一点出来，
+   长的那档拿到够用的宽度；min-width 44px 兜住命中区（320 宽下最窄的一段约 52px）。
+   nowrap 是硬保险——文案四个字是定过字面的，宁可宽也不许折行。 */
 .seg-group { display: flex; gap: var(--space-1); }
 .seg {
-  flex: 1; min-height: 44px; padding: var(--space-2) var(--space-3);
+  flex: 1 1 auto; min-width: 44px;
+  min-height: 44px; padding: var(--space-2) var(--space-3);
+  white-space: nowrap;
   border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
   background: transparent; color: var(--color-text);
   font-family: inherit; font-size: 15px; font-weight: 500; cursor: pointer;
