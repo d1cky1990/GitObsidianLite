@@ -57,6 +57,10 @@ export function shellHtml() {
     '<div id="scrim" class="scrim" data-shell="close" hidden></div>',
     '<div id="main" class="main">',
     '  <header class="topbar">',
+    // #68：编辑 / 冲突态左上那颗「退出编辑 / 返回」。骨架顶栏是正文唯一的一条栏，
+    // 这颗按钮与 ☰ 占同一格：平时藏起来，进了编辑 / 冲突态换成它（文字与显隐由
+    // main.js 的 syncEditorChrome 按 state.mode 同步，监听只绑一次）。
+    '    <button id="btn-layer-back" class="topbar-text-btn" aria-label="退出编辑" hidden>‹ 退出编辑</button>',
     '    <button id="btn-open" class="icon-btn" data-shell="open" aria-label="打开侧栏">' + icon('sidebar-open') + '</button>',
     // 关闭键在侧栏外面、正文区靠左：窄屏贴侧栏边缘外侧，宽屏在「☰」旁边。
     '    <button id="btn-close" class="icon-btn" data-shell="close" aria-label="关闭侧栏" hidden>' + icon('close') + '</button>',

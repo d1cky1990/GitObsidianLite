@@ -1011,16 +1011,9 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
   font-size: 13px; line-height: 1.4; color: var(--color-warning);
 }
 
-/* --- 编辑 / 冲突态左上的「退出编辑」「返回」：由 <a> 改成 <button> ---------
-   视觉沿用 .bar .back 的强调色，button 自己抹掉默认边框与底色；命中区 44px。 */
-.bar button.back {
-  appearance: none; -webkit-appearance: none;
-  min-height: 44px; padding: 0 var(--space-2);
-  border: none; background: transparent;
-  font-family: inherit; font-size: 14px; cursor: pointer;
-  color: var(--color-accent);
-}
-.bar button.back:active { background: var(--color-pressed); }
+/* --- 编辑 / 冲突态左上的「退出编辑」「返回」：随旧顶栏一起搬到骨架 -------------
+   那颗按钮现在住在骨架顶栏（#68 的 #btn-layer-back），样式在文件末尾
+   「#68 · 正文只留一条顶栏」一段；这里不再保留 .bar button.back。 */
 
 /* --- 侧栏底部「新建 / 设置」横条是例外，固定不动（§6 第 6 条） -------------
    #63 段已把 .sidebar-foot 定成 position:static、不随可见视口上移。本段
@@ -1125,4 +1118,32 @@ mark.search-hit { background: var(--color-selection); color: var(--color-text); 
    width/height，这里只补基线对齐，不动已有命中区与颜色规则。 */
 .ic svg, .res-title .ic svg, .row-more svg, .search-clear svg, .fab svg {
   vertical-align: middle;
+}
+
+/* ============================================================
+   #68 · 正文只留一条顶栏（撤掉旧 <header class="bar">）
+   旧栏左上那颗「退出编辑 / 返回」搬到骨架顶栏的 #btn-layer-back（在 #app 之外、
+   常驻节点），所以这里给它一套样式；上面 `.bar button.back` 那一段随旧栏一起删掉。
+   ============================================================ */
+
+/* 左上那格：观感沿用旧栏那颗（强调色、44×44 命中区、透明底），
+   只是宿主换成了 .topbar。作者样式的 display 会盖掉浏览器默认的
+   [hidden]{display:none}，所以单独补一条 !important。 */
+.topbar-text-btn {
+  appearance: none; -webkit-appearance: none;
+  flex: none; min-height: 44px; min-width: 44px;
+  padding: 0 var(--space-1);
+  border: none; border-radius: var(--radius-xs);
+  background: transparent; color: var(--color-accent);
+  font-family: inherit; font-size: 14px; line-height: 1.4;
+  white-space: nowrap; cursor: pointer;
+}
+.topbar-text-btn:hover { background: var(--color-hover); }
+.topbar-text-btn:active { background: var(--color-pressed); }
+.topbar-text-btn[hidden] { display: none !important; }
+
+/* §5.2：顶栏「最小高 56px，另加安全区」。刘海 / 灵动岛机型把正文顶到状态栏下面时，
+   这颗 56px 的栏自己不会让，得把安全区加在它的上内边距里。不支持的浏览器 env() 取 0。 */
+.topbar {
+  padding-top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
 }

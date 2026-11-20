@@ -1419,24 +1419,21 @@ function onTaskClick(line) {
 }
 
 function renderEditor() {
-  const name = state.path.split('/').pop();
-
   // #65：动作区落在 #61 骨架层的 #edit-actions（在 #app 之外、节点常驻、随可见
   // 视口移动），不再写进 #app 的 .foot——重画正文永不碰动作区，也不换输入框节点。
   // 冲突逐字比对界面与预览层内部一个字不改，只换落位。
   const actionsHost = document.getElementById('edit-actions');
 
   if (state.mode === 'conflict') {
-    // C-4：左上「返回」退回编辑态（草稿原样、不加提示），不回目录。
+    // C-4：顶上那颗「返回」退回编辑态（草稿原样、不加提示），不回目录。
+    // #68：那颗按钮住在骨架顶栏（#btn-layer-back）——正文不再画第二条栏，
+    // 篇名与它都由 syncEditorChrome() 按 state.mode 同步，这里一个字都不写。
     app.innerHTML =
-      '<header class="bar"><button class="back" id="conflict-back">‹ 返回</button><span class="title">' + esc(name) + ' · 冲突合并</span></header>' +
       '<main class="editor-body">' + renderConflict() + '</main>' +
       renderToast();
     if (actionsHost) actionsHost.innerHTML = '<button class="primary" id="preview-btn">预览改动处理</button>';
     const pb = document.getElementById('preview-btn');
     if (pb) pb.addEventListener('click', () => { state.conflict.previewOpen = !state.conflict.previewOpen; state.conflict.copyPrompt = false; render(); });
-    const cback = document.getElementById('conflict-back');
-    if (cback) cback.addEventListener('click', conflictBackToEdit);
     if (state.activeFrag != null) requestAnimationFrame(positionBubble);
     return;
   }
@@ -1465,12 +1462,9 @@ function renderEditor() {
   // 阅读态左上「‹ 返回」＝关掉这篇（评审修复第 1 条：与系统返回共用 closeNote()，
   // 不再用 href 跳回所在目录、也不新增历史）；编辑态换成「退出编辑」——手机上
   // 左上角那颗是回阅读态，不是「关掉这篇」，返回永远只退一层。
-  const back = state.mode === 'edit'
-    ? '<button class="back" id="exit-edit-btn">‹ 退出编辑</button>'
-    : '<button class="back" id="close-note-btn">‹ 返回</button>';
-
+  // #68：这两个动作都不再画在正文里。阅读态按原型**不留返回键**（关掉这篇交给系统
+  // 返回，见文件末尾的占位历史），编辑态那颗移到骨架顶栏；这里只留正文本身。
   app.innerHTML =
-    '<header class="bar">' + back + '<span class="title">' + esc(name) + '</span></header>' +
     '<main class="editor-body">' + body + '</main>' +
     renderOverlays() +
     renderToast();
@@ -1484,14 +1478,10 @@ function renderEditor() {
   }
   const eb = document.getElementById('edit-btn');
   if (eb) eb.addEventListener('click', startEdit);
-  const ex = document.getElementById('exit-edit-btn');
-  if (ex) ex.addEventListener('click', exitEdit);
   const cb = document.getElementById('cancel-btn');
   if (cb) cb.addEventListener('click', exitEdit); // #65：有改动先问「放弃改动？」
   const sb = document.getElementById('save-btn');
   if (sb) sb.addEventListener('click', save);
-  const cnb = document.getElementById('close-note-btn');
-  if (cnb) cnb.addEventListener('click', () => closeNote(CLOSE_NOTE_HREF)); // 评审修复第 1 条：界面「‹ 返回」＝关掉这篇
   wireDialog();
 }
 
@@ -1790,6 +1780,32 @@ document.addEventListener('click', (e) => {
   if (retry) { openFile(retry.dataset.readRetry); return; }
 });
 
+/* ---------- #68：正文只剩一条栏，所以「关掉这篇」得有一条退路 ------------------
+   阅读态按原型撤掉了界面上的「‹ 返回」（那一格留给了编辑态的「退出编辑」）。
+   从列表 / 搜索 / 最近打开点进来时，浏览器历史里本来就有上一页，系统返回照常回列表。
+   但**直接拿分享链接打开、或者在某篇上刷新／重开标签页**时，历史里只有这一条：
+   这时按系统返回会直接退出应用 / 浏览器，而界面上再没有别的「关掉」入口。
+
+   做法是补一条占位历史（与侧栏滑出压占位同一思路）：把当前这条钉成「根」，
+   再把这篇压上去。于是返回退到根（空状态），不再退到应用外面。
+   只在**这个标签页第一次加载**时补——刷新时浏览器里的历史还在，补了反而会把
+   「上一篇」挤到后面去。标记放 sessionStorage：同一标签页内共享、关掉即失效。 */
+const HISTORY_BOOT_KEY = 'gitobsidianlite.historyBooted';
+
+function ensureHistoryBehindNote() {
+  let seen = false;
+  try { seen = sessionStorage.getItem(HISTORY_BOOT_KEY) === '1'; } catch (_) { /* 隐私模式：当首次 */ }
+  try { sessionStorage.setItem(HISTORY_BOOT_KEY, '1'); } catch (_) { /* 忽略 */ }
+  if (seen) return;                                  // 刷新 / 站内跳转后的重载：历史本来就在
+  const hash = location.hash.replace(/^#/, '');
+  if (!hash.startsWith('/edit/')) return;            // 落根 / 旧目录链接不补
+  try {
+    history.replaceState(history.state, '', location.pathname + location.search + '#/');
+    history.pushState({ noteEntry: true }, '', '#/edit/' + hash.slice(6));
+  } catch (_) { /* 老环境忽略：退回原样，行为与改动前一致 */ }
+}
+
+ensureHistoryBehindNote();
 resetFab();
 navigate();
 pendingChecks.replay(); // #60：冷启动也补发一次没送到的勾选
@@ -1994,10 +2010,32 @@ initViewport();
  *   - 动作区容器只在正文三态出现，其余态收起。
  * 宽屏下侧栏照旧在（不隐藏 #sidebar），「点别的笔记被拦住并说明原因」由下面
  * 捕获阶段的拦截负责。
+ *
+ * #68：正文只有一条栏，所以两件事也落在这儿——顶栏中间那格写篇名、左上那格在
+ * 编辑 / 冲突态换成「退出编辑 / 返回」。两者都在骨架层（#app 之外、节点常驻），
+ * 每次 render 只改文字与 hidden，不增删节点，重画正文碰不到它们。
  */
 function syncEditorChrome() {
   const openBtn = document.getElementById('btn-open');
   if (openBtn) openBtn.hidden = isLocked();
+  // #68：左上那格与 ☰ 共用位置——编辑 / 冲突态换成「退出编辑 / 返回」。
+  // 阅读态按原型**没有返回键**（关掉这篇由系统返回承担，防困住的占位历史见文件末尾）。
+  const layerBack = document.getElementById('btn-layer-back');
+  if (layerBack) {
+    layerBack.hidden = !isLocked();
+    layerBack.textContent = state.mode === 'conflict' ? '‹ 返回' : '‹ 退出编辑';
+    layerBack.setAttribute('aria-label', state.mode === 'conflict' ? '返回编辑' : '退出编辑');
+  }
+  // #68：顶栏中间那格接上篇名。**去扩展名**，与树行、搜索结果、原型一致；
+  // 全名（含 .md）留在 title 上——长名字被省略号截断时还能悬停看全。
+  // 只在这篇真的打开了的时候写：读失败 / 加载中 / 空状态都不挂上一页的名字。
+  const noteOpen = state.view === 'editor' && !state.readState && !state.emptyActive && !!state.path;
+  const titleEl = document.getElementById('doc-title');
+  if (titleEl) {
+    const full = noteOpen ? state.path.split('/').pop() : '';
+    titleEl.textContent = full.replace(/\.md$/i, '');
+    titleEl.title = full;
+  }
   // 评审修复第 5 条：「⋯」主入口（骨架 #btn-more）与旧菜单同一锁判定——
   // 编辑 / 冲突态置灰但仍能按（不 disable），点开后的三个动作与「先保存或取消，
   // 再改文件」锁提示由 renderOps() / [data-op] 按 isLocked() 处理，不另造一套判定。
@@ -2020,6 +2058,17 @@ function conflictBackToEdit() {
   state.mode = 'edit';
   state.conflict = null;
   render();
+}
+
+/* #68：骨架顶栏左上那颗（编辑态「退出编辑」、冲突态「返回」）只接一次监听。
+   它住在 #app 之外、节点常驻，重画正文不会换掉它；每次 render 重新绑会叠加，
+   所以按当前 mode 分派，而不是在 renderEditor() 里绑。 */
+const layerBackBtn = document.getElementById('btn-layer-back');
+if (layerBackBtn) {
+  layerBackBtn.addEventListener('click', () => {
+    if (state.mode === 'conflict') { conflictBackToEdit(); return; }
+    if (state.mode === 'edit') exitEdit();   // 有改动先问「放弃改动？」，同旧那颗
+  });
 }
 
 /** 系统返回 / 界面返回（layout.js 派发 ui:back）：按真实 mode 每次退一层。
