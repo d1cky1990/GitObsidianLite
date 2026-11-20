@@ -257,24 +257,33 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--color-border);
 }
 .topbar-title {
-  flex: 1; min-width: 4.5em; font-size: 15px; font-weight: 500; line-height: 21px;
+  flex: 0 1 auto; min-width: 4.5em; font-size: 15px; font-weight: 500; line-height: 21px;
   color: var(--color-text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* #71：篇名左边那截父目录。弱一档：12px / 400 / 18px（规范「日期、父目录」那行），
-   次要色；两截盒子都靠 .topbar 的 align-items 居中，基线差不到 1px。
-   挤的时候它先让：shrink 100 是相对篇名 1 的优先级（flex 按 因数×基准 分负空间），
-   目录先被省略号吃掉，篇名保住 min-width（约四个半字）。
-   max-width 再兜一层——撞上超长目录名也不会把篇名挤到几个像素。
-   斜杠画在 ::after 上而不是写成文字：目录被省略号截断时斜杠跟着一起没掉，
-   不会留下「长目录… / 篇名」这种半截话。 */
+   次要色；两截盒子都靠 .topbar 的 align-items 居中，实测基线差 0.5px。
+   挤的时候它先让：shrink 100 对篇名的 1（负空间按 因数×基准 分），目录先被省略号
+   吃掉；篇名另有 min-width（约四个半字）兜底，目录自己也留 4.5em——缩到「长目录…」
+   就停，不会整个消失、也不会只剩两个字。
+   **不设 max-width**：设了就会在还有空地方的时候把目录截掉（390 长目录实测：
+   截到 165px，右边却空着 70px）。宽屏也不铺满整条路径——只取最近一级，
+   内容多宽就多宽，多出来的地方留给空白。 */
 .topbar-parent {
-  flex: 0 100 auto; min-width: 0; max-width: 45%;
+  flex: 0 100 auto; min-width: 4.5em;
   font-size: 12px; line-height: 18px;
   color: var(--color-text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.topbar-parent::after { content: ' /'; }
+/* 斜杠是独立节点、不跟着目录一起截：目录被截断时仍看得出「到哪儿是篇名」。
+   根下的笔记与目录一起 hidden，不会留下一根孤零零的斜杠。 */
+.topbar-sep {
+  flex: none; font-size: 12px; line-height: 18px;
+  color: var(--color-text-secondary);
+}
+/* 篇名不再 flex:1 撑满，⋯ 靠这条 auto 外边距留在最右边（空状态时它整个 hidden，
+   这条不生效，中间那格自然留空）。 */
+#btn-more { margin-left: auto; }
 .edit-actions {
   position: sticky; bottom: 0; z-index: var(--z-topbar);
   display: flex; gap: var(--space-2);

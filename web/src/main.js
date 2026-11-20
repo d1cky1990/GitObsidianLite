@@ -2043,12 +2043,15 @@ function syncEditorChrome() {
   const noteOpen = state.view === 'editor' && !state.readState && !state.emptyActive && !!state.path;
   const dir = noteOpen ? lastDirOf(state.path) : '';
   const dirEl = document.getElementById('doc-parent');
+  const sepEl = document.getElementById('doc-sep');
   if (dirEl) {
     dirEl.textContent = dir;
     dirEl.hidden = !dir;
     // 悬停看全：目录那截被省略号截断时，指上去还是能读到完整的一级目录名
     dirEl.title = dir;
   }
+  // 斜杠跟目录同进同退：根下的笔记两根都不出现，不画孤零零的一根斜杠
+  if (sepEl) sepEl.hidden = !dir;
   const titleEl = document.getElementById('doc-title');
   if (titleEl) {
     titleEl.textContent = noteOpen ? stemOf(state.path) : '';
