@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import {
   dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf,
-  commitMessage,
+  crumbOf, commitMessage,
 } from './file-names.js';
 
 test('路径拆装：根目录不该拼出开头带斜杠的路径', () => {
@@ -72,6 +72,18 @@ test('重命名弹窗预填：.md 去掉后缀，别的原样', () => {
   assert.equal(stemOf('a/b/会议记录.md'), '会议记录');
   assert.equal(stemOf('会议记录.MD'), '会议记录');
   assert.equal(stemOf('a/截图.png'), '截图.png');
+});
+
+test('顶栏中间那格：只取最近一级父目录，根下的笔记没有父目录', () => {
+  // 390 宽下次要格放不下整条路径（#71 选的是「只显示最近一级」那条）
+  assert.deepEqual(crumbOf('笔记/短篇.md'), { dir: '笔记', name: '短篇' });
+  assert.deepEqual(crumbOf('长目录名一/长目录名二/那篇超长名字.md'),
+    { dir: '长目录名二', name: '那篇超长名字' });
+  // 根下的笔记：dir 为空，界面靠这个空串决定「不画那根斜杠」
+  assert.deepEqual(crumbOf('根上的.md'), { dir: '', name: '根上的' });
+  // 后缀大小写与别的不一样也要去干净，和树行 / 搜索结果一个口径
+  assert.deepEqual(crumbOf('a/b/C.MD'), { dir: 'b', name: 'C' });
+  assert.deepEqual(crumbOf('非笔记.png'), { dir: '', name: '非笔记.png' });
 });
 
 test('提交信息：四种动词分得开，都带路径', () => {

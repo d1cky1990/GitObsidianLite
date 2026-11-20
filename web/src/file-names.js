@@ -81,6 +81,20 @@ export function stemOf(path) {
 }
 
 /**
+ * 顶栏中间那格：「父目录 / 篇名」两截（#71）。
+ *
+ * 只取**最近一级**父目录，不铺整条路径——390 宽下中间只剩 270px 左右，
+ * 深目录全铺出来篇名就没位置了（#71 三个候选里选的 ①，另两个否决理由在票里）。
+ * 根下的笔记 `dir` 是空串，界面靠它决定「不画那根斜杠」。
+ * 篇名与树行、搜索结果同口径：去 `.md`，大小写不敏感。
+ */
+export function crumbOf(path) {
+  const dir = dirOf(path);
+  const i = dir.lastIndexOf('/');
+  return { dir: i < 0 ? dir : dir.slice(i + 1), name: stemOf(path) };
+}
+
+/**
  * 提交信息的唯一出处。
  *
  * 格式是「手机端：动词 + 路径」——翻 git 历史时一眼看出这次改动是从手机上下手的，

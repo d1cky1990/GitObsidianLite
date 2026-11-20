@@ -7,7 +7,8 @@ import {
   installWikilinkRule, buildWikilinkIndex, hydrateWikilinkIndex, serializeWikilinkIndex, lookupWikilink,
 } from './wikilinks.js';
 import {
-  dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf, commitMessage,
+  dirOf, baseOf, joinPath, normalizeNewName, hasName, renameTarget, moveTarget, stemOf,
+  crumbOf, commitMessage,
 } from './file-names.js';
 // #66 文件操作规则层：逐字文案、弹窗模型、常驻浮层骨架、树行入口判定、核对事件。
 // 规则层在独立模块；但本文件仍有 #66 的接线与改造——文件开头的
@@ -2034,12 +2035,23 @@ function syncEditorChrome() {
   // #68：顶栏中间那格接上篇名。**去扩展名**，与树行、搜索结果、原型一致；
   // 全名（含 .md）留在 title 上——长名字被省略号截断时还能悬停看全。
   // 只在这篇真的打开了的时候写：读失败 / 加载中 / 空状态都不挂上一页的名字。
+  //
+  // #71：篇名左边补一截父目录（`父目录 / 篇名`）。只取最近一级（票里选的 ①），
+  // 根下的笔记整块藏起来（不画孤零零的斜杠）。两格的判据是同一个 noteOpen——
+  // 各写一套迟早会出现「有目录没篇名」这种半截顶栏。
   const noteOpen = state.view === 'editor' && !state.readState && !state.emptyActive && !!state.path;
+  const crumb = noteOpen ? crumbOf(state.path) : { dir: '', name: '' };
+  const crumbEl = document.getElementById('doc-crumb');
+  if (crumbEl) {
+    crumbEl.textContent = crumb.dir;
+    crumbEl.hidden = !crumb.dir;
+    // 悬停看全：目录那截被省略号截断时，指上去还是能读到完整的一级目录名
+    crumbEl.title = crumb.dir;
+  }
   const titleEl = document.getElementById('doc-title');
   if (titleEl) {
-    const full = noteOpen ? state.path.split('/').pop() : '';
-    titleEl.textContent = full.replace(/\.md$/i, '');
-    titleEl.title = full;
+    titleEl.textContent = crumb.name;
+    titleEl.title = noteOpen ? baseOf(state.path) : '';
   }
   // 评审修复第 5 条：「⋯」主入口（骨架 #btn-more）与旧菜单同一锁判定——
   // 编辑 / 冲突态置灰但仍能按（不 disable），点开后的三个动作与「先保存或取消，
